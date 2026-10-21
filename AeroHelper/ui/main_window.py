@@ -103,8 +103,6 @@ QUIT_AFTER_5_ERRORS_TOOLTIP = 'Highly recommended.'
 INTELLIGENT_STEERING_TOOLTIP = 'Beta feature: hones the steering multiplier to match how your vehicle actually turns, starting from the current Multiplier value.\n\nIf the ship understeers, the multiplier goes up. If it oversteers, it goes down. The learned value is saved to Multiplier so the next start continues from there.\n\nStill in beta - results vary by vehicle.'
 REJECT_FLAGGED_BEARINGS_TOOLTIP = 'Beta feature: ignores weather and map-zoom readings.\n\nDistances of exactly 1.3, 2.6, 5.3, 10.7, and 21.5 nm are skipped.\n\nWaypoint names FOGGY, WINDY, and CLEAR are not used as the steering target.\n\nOn by default.'
 OCR_DEBUG_TOOLTIP = 'When checked: writes full OCR output to AeroHelper.log.\nWhen off: OCR text is not logged, except a short window around errors.'
-CONSENT_TEXT = 'AeroHelper is an independent helper tool for Aeronautica. It is not endorsed by the Aeronautica staff team.\n\nAeroHelper can read your screen with OCR, send Discord webhook updates, and control keyboard/mouse input for supported automation modes.\n\nAeronautica staff said development may continue, but it may not be advertised as official or endorsed, and autopilot features must be restricted to vehicles with an intended AFK gameplay loop. Use those features only with boat and airship licenses.\n\nThis is allowed under that guidance, but there may still be rare theoretical Roblox account or platform concerns.'
-TOS_URL = f'{API_BASE.rstrip("/")}/tos'
 INFO_PANEL_STYLE = '\n    color: %s;\n    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 rgba(125, 211, 252, 0.12), stop:1 rgba(255, 255, 255, 0.05));\n    padding: 10px;\n    border-radius: 13px;\n    border: 1px solid %s;\n' % (TEXT_PRIMARY, BORDER_SOFT)
 STATUS_VIEW_STYLES = {'info': '\n        QTextEdit {\n            color: %s;\n            background-color: rgba(38, 57, 87, 0.72);\n            padding: 10px;\n            border-radius: 12px;\n            border: 1px solid rgba(143, 183, 255, 0.38);\n        }\n    ' % ACCENT, 'ok': '\n        QTextEdit {\n            color: %s;\n            background-color: %s;\n            padding: 10px;\n            border-radius: 12px;\n            border: 1px solid %s;\n        }\n    ' % (SUCCESS_TEXT, SUCCESS_BG, SUCCESS_BORDER), 'warning': '\n        QTextEdit {\n            color: %s;\n            background-color: %s;\n            padding: 10px;\n            border-radius: 12px;\n            border: 1px solid %s;\n        }\n    ' % (WARNING_TEXT, WARNING_BG, WARNING_BORDER), 'error': '\n        QTextEdit {\n            color: %s;\n            background-color: %s;\n            padding: 10px;\n            border-radius: 12px;\n            border: 1px solid %s;\n        }\n    ' % (ERROR_TEXT, ERROR_BG, ERROR_BORDER)}
 ISSUES_SCROLL_STYLE = f'\n    QScrollArea#issuesScroll {{\n        background: qlineargradient(x1:0, y1:0, x2:1, y2:1,\n            stop:0 rgba(255, 255, 255, 0.055),\n            stop:1 rgba(125, 211, 252, 0.04));\n        border: 1px solid {BORDER_SOFT};\n        border-radius: 13px;\n    }}\n    QWidget#issuesScrollInner {{\n        background: transparent;\n    }}\n'
@@ -223,7 +221,6 @@ class MainWindow(QMainWindow):
     update_status_signal = pyqtSignal(str, str, object)
     set_global_version_signal = pyqtSignal(str)
     set_issues_signal = pyqtSignal(list)
-    set_official_routes_signal = pyqtSignal(object)
 
     def __init__(self, version=None, global_version=None):
         super().__init__()
@@ -248,13 +245,6 @@ class MainWindow(QMainWindow):
         self.share_data_override_done_signal.connect(self.on_share_data_override_done)
         self.set_global_version_signal.connect(self.set_global_version)
         self.set_issues_signal.connect(self.update_issues)
-        self.set_official_routes_signal.connect(self.set_official_routes_remote)
-        self._pending_official_version = None
-        self._pending_official_routes = None
-        if not self.config.get_consent_accepted():
-            self._set_controls_enabled(False)
-            self.start_button.setEnabled(False)
-            QTimer.singleShot(0, self._show_consent_dialog)
 
     def _install_aircraft_hud_test(self):
         action = self.menuBar().addAction('Aircraft HUD Test')
@@ -572,34 +562,8 @@ class MainWindow(QMainWindow):
         )
         self.destination_pick_row.hide()
 
-    def _build_routes_row(self, layout):
-        from AeroHelper.ui.routes_dialog import ROUTES_BUTTON_TOOLTIP
-        self.routes_row = QWidget()
-        routes_row = QHBoxLayout(self.routes_row)
-        routes_row.setContentsMargins(0, 0, 0, 0)
-        routes_row.setSpacing(8)
-        self.routes_button = QPushButton('Routes')
-        self.routes_button.setMinimumHeight(scale_px(38))
-        self.routes_button.setFont(QFont(APP_FONT_FAMILY, scale_font(10), QFont.Bold))
-        self.routes_button.setStyleSheet(SECONDARY_BUTTON_STYLE)
-        self.routes_button.setCursor(Qt.PointingHandCursor)
-        self.routes_button.setToolTip(self._format_tooltip(ROUTES_BUTTON_TOOLTIP))
-        self.routes_button.clicked.connect(self._show_routes_window)
-        routes_row.addWidget(self.routes_button, 1)
-        routes_beta = self._create_badge(
-            'β',
-            color=WARNING_TEXT,
-            background=WARNING_BG,
-            border=WARNING_BORDER,
-            tooltip=self._format_tooltip(ROUTES_BUTTON_TOOLTIP),
-        )
-        routes_row.addWidget(routes_beta)
-        self.routes_row.hide()
-        layout.addWidget(self.routes_row)
-
     def _build_option_checkboxes(self, layout):
         self._build_destination_pick_row(layout)
-        self._build_routes_row(layout)
         self.mid_mission_checkbox = QCheckBox('Start Mid-Mission')
         self.mid_mission_checkbox.setFont(QFont(APP_FONT_FAMILY, 9))
         self.mid_mission_checkbox.stateChanged.connect(self._on_checkbox_state_changed)
@@ -1085,15 +1049,6 @@ class MainWindow(QMainWindow):
             self.version_check_label.setText(f'v{global_version}')
             self._style_badge(self.version_check_label, color=SUCCESS_TEXT)
 
-    @pyqtSlot(object)
-    def set_official_routes_remote(self, payload):
-        from AeroHelper.ui.routes_dialog import handle_startup_routes_payload
-        handle_startup_routes_payload(self, payload)
-
-    def _show_routes_window(self):
-        from AeroHelper.ui.routes_dialog import open_routes_window
-        open_routes_window(self)
-
     def _show_version_mismatch_dialog(self, global_version):
         dialog = QDialog(self)
         self._apply_no_context_help(dialog)
@@ -1247,7 +1202,6 @@ class MainWindow(QMainWindow):
         self.pause_hotkey_button.setEnabled(enabled)
         for btn in self.destination_pick_buttons.values():
             btn.setEnabled(enabled)
-        self.routes_button.setEnabled(enabled)
         self.guard_fold_btn.setEnabled(enabled)
         self.blocked_services_input.setEnabled(enabled)
         self.blocked_process_input.setEnabled(enabled)
@@ -1614,65 +1568,6 @@ class MainWindow(QMainWindow):
         layout.addWidget(close_button)
         dialog.exec_()
 
-    def _show_consent_dialog(self):
-        dialog = QDialog(self)
-        self._apply_no_context_help(dialog)
-        dialog.setWindowTitle('AeroHelper Consent Required')
-        icon = load_app_icon()
-        if not icon.isNull():
-            dialog.setWindowIcon(icon)
-        dialog.setModal(True)
-        dialog.resize(max(int(self.width() * 1.05), 520), max(int(self.height() * 0.48), 360))
-        dialog.setStyleSheet(f'\n            QDialog {{\n                background-color: {BG_WINDOW};\n            }}\n            QLabel {{\n                color: {TEXT_PRIMARY};\n                background-color: transparent;\n            }}\n            QTextEdit {{\n                color: {TEXT_PRIMARY};\n                background-color: {BG_CARD};\n                border: 1px solid {BORDER_SOFT};\n                border-radius: 12px;\n                padding: 12px;\n            }}\n            QPushButton {{\n                background-color: {ACCENT_WARM};\n                color: {BG_WINDOW};\n                border: 1px solid rgba(255, 255, 255, 0.05);\n                border-radius: 10px;\n                padding: 8px 18px;\n                min-width: 90px;\n                font-weight: 600;\n            }}\n            QPushButton:hover {{\n                background-color: #E3D3B7;\n            }}\n            QPushButton:pressed {{\n                background-color: #C9B18D;\n            }}\n            ')
-        layout = QVBoxLayout(dialog)
-        header = QHBoxLayout()
-        logo = QLabel()
-        pixmap = load_app_pixmap(40)
-        if not pixmap.isNull():
-            logo.setPixmap(pixmap)
-            header.addWidget(logo)
-        title = QLabel('AeroHelper Consent Required')
-        title.setFont(QFont(APP_FONT_FAMILY, 13, QFont.Bold))
-        header.addWidget(title)
-        header.addStretch()
-        layout.addLayout(header)
-        text = QTextEdit()
-        text.setReadOnly(True)
-        text.setLineWrapMode(QTextEdit.WidgetWidth)
-        text.setPlainText(CONSENT_TEXT)
-        text.setMinimumHeight(max(int(dialog.height() * 0.45), 180))
-        layout.addWidget(text)
-        tos_label = QLabel(
-            f'Review AeroHelper\'s <a href="{html.escape(TOS_URL)}" style="color: {ACCENT};">Terms of Service</a> on the website before continuing.'
-        )
-        tos_label.setOpenExternalLinks(True)
-        tos_label.setWordWrap(True)
-        tos_label.setTextFormat(Qt.RichText)
-        tos_label.setFont(QFont(APP_FONT_FAMILY, 10))
-        layout.addWidget(tos_label)
-        button_row = QHBoxLayout()
-        button_row.addStretch()
-        agree_button = QPushButton('I Agree')
-        exit_button = QPushButton('Exit')
-        agree_button.clicked.connect(dialog.accept)
-        exit_button.clicked.connect(dialog.reject)
-        button_row.addWidget(agree_button)
-        button_row.addWidget(exit_button)
-        layout.addLayout(button_row)
-        dialog.exec_()
-        if dialog.result() == QDialog.Accepted:
-            self.config.set_consent_accepted(True)
-            self._set_controls_enabled(True)
-            self.start_button.setEnabled(True)
-            self.on_mode_changed(self.config.get_mode())
-            self._update_warnings()
-            return
-        app = QApplication.instance()
-        if app:
-            app.quit()
-        else:
-            self.close()
-
     def show_api_notice(self, severity, title, message, show_dialog=False):
         self.setWindowState(self.windowState() & ~Qt.WindowMinimized)
         self.show()
@@ -1714,10 +1609,6 @@ class MainWindow(QMainWindow):
 
     def on_start_clicked(self):
         self.clear_error()
-        if not self.config.get_consent_accepted():
-            self._show_consent_dialog()
-            if not self.config.get_consent_accepted():
-                return
         if not self._webhook_redacted:
             self._webhook_value = self.webhook_input.text().strip()
             self.config.set_webhook_url(self._webhook_value)
@@ -1789,7 +1680,6 @@ class MainWindow(QMainWindow):
         self.intelligent_steering_row.setVisible(is_autosteer or is_autopilot)
         self.mid_mission_checkbox.setVisible(is_autopilot)
         self.destination_pick_row.setVisible(is_autopilot)
-        self.routes_row.setVisible(is_autopilot)
         self.interval_input.setEnabled(not is_autopilot)
         if is_monitoring or is_autosteer:
             self._set_checkbox_from_config(self.custom_waypoint_checkbox, self._custom_waypoint_enabled_for_mode(text))

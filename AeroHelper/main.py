@@ -131,13 +131,6 @@ def _fetch_startup_data(main_window, webhook_url, app_version):
                 main_window.set_issues_signal.emit([])
         except Exception:
             main_window.set_issues_signal.emit([])
-        try:
-            with urlopen(f'{API_BASE}/api/routes', timeout=10) as r:
-                payload = json.loads(r.read().decode('utf-8', errors='replace'))
-            if isinstance(payload, dict):
-                main_window.set_official_routes_signal.emit(payload)
-        except Exception:
-            pass
         if webhook_url:
             try:
                 DiscordNotifier(webhook_url).set_webhook_branding()

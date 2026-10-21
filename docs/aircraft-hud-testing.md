@@ -2,6 +2,8 @@
 
 This is a read-only experiment. Existing boat/airship automation is unchanged.
 No aircraft flight inputs or calibrated pitch/roll readings have been added.
+The upstream consent prompt and Routes manager are removed from this fork's UI;
+startup no longer fetches the upstream route list.
 Upstream AeroHelper's MIT license and attribution remain in place.
 
 ## Windows GUI workflow
