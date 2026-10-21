@@ -110,6 +110,19 @@ class AircraftHudDialog(QDialog):
         layout.addWidget(self.preview,1)
         self.details = QTextEdit()
         self.details.setReadOnly(True)
+        # Native Windows text colours can remain black when the parent gives
+        # this editor a dark background. Specify both sides of the contrast.
+        self.details.setStyleSheet("""
+            QTextEdit {
+                color: #F8FBFF;
+                background-color: #0B1020;
+                selection-color: #FFFFFF;
+                selection-background-color: #315B86;
+                border: 1px solid #53627A;
+                border-radius: 6px;
+                padding: 8px;
+            }
+        """)
         self.details.setMaximumHeight(210)
         layout.addWidget(self.details)
         self.capture_button.clicked.connect(self.begin_capture)
