@@ -236,6 +236,7 @@ class MainWindow(QMainWindow):
         self._webhook_redacted = True
         self._share_data_override_succeeded = False
         self.init_ui()
+        self._install_aircraft_hud_test()
         self.load_config()
         self.show_error_signal.connect(self.show_error)
         self.update_multiplier_signal.connect(self.apply_learned_multiplier)
@@ -254,6 +255,37 @@ class MainWindow(QMainWindow):
             self._set_controls_enabled(False)
             self.start_button.setEnabled(False)
             QTimer.singleShot(0, self._show_consent_dialog)
+
+    def _install_aircraft_hud_test(self):
+        action = self.menuBar().addAction('Aircraft HUD Test')
+        action.triggered.connect(self._open_aircraft_hud_test)
+
+    def _open_aircraft_hud_test(self):
+        from PIL import ImageGrab
+        from AeroHelper.automation.aircraft_hud import analyze_cockpit
+        dialog = QDialog(self)
+        dialog.setWindowTitle('Aircraft HUD Test (read-only)')
+        dialog.resize(480, 220)
+        layout = QVBoxLayout(dialog)
+        info = QLabel('Keep Roblox in cockpit view. Captures the visible desktop. No flight controls are sent.')
+        info.setWordWrap(True)
+        layout.addWidget(info)
+        result = QLabel('Waiting for capture')
+        result.setWordWrap(True)
+        layout.addWidget(result)
+        capture = QPushButton('Capture HUD')
+        layout.addWidget(capture)
+        def run_capture():
+            try:
+                reading = analyze_cockpit(ImageGrab.grab())
+                if reading.horizon_y is None:
+                    result.setText('No confident horizon found; ensure cockpit HUD is visible.')
+                else:
+                    result.setText('Horizon candidate Y: {:.0f}px; confidence: {:.0%}. Pitch and roll not calibrated.'.format(reading.horizon_y, reading.horizon_confidence))
+            except Exception as exc:
+                result.setText('Capture failed: {}'.format(exc))
+        capture.clicked.connect(run_capture)
+        dialog.exec_()
 
     def _webhook_display_text(self):
         val = self._webhook_value.strip()
