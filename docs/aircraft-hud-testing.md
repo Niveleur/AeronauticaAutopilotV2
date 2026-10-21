@@ -16,15 +16,21 @@ Upstream AeroHelper's MIT license and attribution remain in place.
    Capture requires Roblox to remain in front. The client area is used rather
    than the whole desktop, including when Roblox is on a second monitor.
 4. Inspect the image after AeroHelper returns. Cyan is a *candidate* line;
-   orange boxes are suggested instrument inspection regions, not verified tape
-   locations. A high pixel-support score is not recognition accuracy.
+   orange boxes follow detected paired tape rails and surround the labelled
+   digital readouts. Unsupported layouts produce no guessed boxes. A high
+   pixel-support score is not recognition accuracy.
 5. Optionally enable **Read OCR too** and capture again. The existing OCR pipeline
    runs in the background; initial model loading/download can take time. Inspect
-   the raw text against the image. Only explicitly labelled altitude/airspeed
-   with units are reported; conflicting or missing values remain unavailable.
-   Unlabelled tape numbers deliberately do not produce a reading.
+   the raw text against the image. Full-screen labelled readings still require
+   explicit units (before or after the value). For the paired-tape HUD profile,
+   separate label and digit crops are read without the waypoint fallback. Each
+   crop requires a recognised instrument label and consistent numeric output.
+   Feet/knots are **assumed from that experimental profile**, not recognised units.
+   Missing labels, mixed text or disagreements between sources remain unavailable.
+   Full-screen tape ticks and chat numbers never substitute for a readout.
 6. Use **Save diagnostic ZIP** to save the original image, annotated image and
-   JSON report. Review visible game/player information before sharing. No files
+   JSON report, plus isolated numeric readout crops when available. Review visible
+   game/player information before sharing. No files
    are uploaded automatically. **Open screenshot** also supports offline review.
 
 A foreground check cannot rule out another application's always-on-top overlay.
@@ -70,3 +76,11 @@ OpenBLAS DLL lives in `numpy/.libs`). CI then downloads that artifact into a
 separate directory and repeats the dependency and EXE checks with toolchain
 folders removed from PATH. Only a green workflow confirms the downloadable
 package passed. These checks do not capture the desktop or contact Roblox.
+
+The first real-capture regression fixture contains only the central HUD from a
+3440×1440 capture: altitude 29,841 ft, indicated airspeed 89 knots, near-horizontal
+zero-pitch line at approximately y=833. Chat and player rosters are excluded.
+Geometry is checked at multiple scales and a reconstructed ultrawide viewport.
+CPU EasyOCR was also run on the uploaded original using the actual region OCR
+pipeline; both numeric readouts matched the visible image. This one capture does
+not validate other aircraft, changing instruments, bank angles or flight control.

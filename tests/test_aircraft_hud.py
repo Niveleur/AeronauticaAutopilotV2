@@ -1,7 +1,10 @@
 import unittest
+from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw
-from AeroHelper.automation.aircraft_hud import analyze_cockpit, parse_instruments
+from AeroHelper.automation.aircraft_hud import (analyze_cockpit, parse_instruments,
+                                                parse_tape_readout, tape_digit_boxes,
+                                                reconcile_instruments)
 
 
 def cockpit(slope=0., lines=(.53,), size=(1000,600)):
@@ -63,6 +66,70 @@ class InstrumentTests(unittest.TestCase):
         self.assertIsNone(parse_instruments('ALT 1000 FT ALT 2000 FT')['altitude'].value)
         self.assertIsNone(parse_instruments('ALT 999999 FT')['altitude'].value)
         self.assertIsNone(parse_instruments('IAS -10 KTS')['airspeed'].value)
+
+
+class ActualCaptureTests(unittest.TestCase):
+    # Cropped central HUD only: no chat, player roster or other user identifiers.
+    fixture = Path(__file__).parent / 'fixtures' / 'aircraft-tapes-29841ft-89kt.png'
+
+    def test_real_hud_horizon_and_tape_crops_at_multiple_scales(self):
+        with Image.open(self.fixture) as original:
+            for scale in (.5,1.,1.5):
+                with self.subTest(scale=scale):
+                    image = original.resize((int(original.width*scale),int(original.height*scale)))
+                    reading = analyze_cockpit(image)
+                    self.assertIsNotNone(reading.tape_rails)
+                    self.assertAlmostEqual(reading.horizon_y,533*scale,delta=6)
+                    self.assertAlmostEqual(reading.horizon_slope,0.,delta=.02)
+                    # Crops track the central readouts rather than the sky.
+                    altitude,speed = reading.altitude_box,reading.speed_box
+                    self.assertTrue(altitude[0] < 1220*scale < altitude[2])
+                    self.assertTrue(speed[0] < 210*scale < speed[2])
+                    for box in tape_digit_boxes(reading).values():
+                        self.assertTrue(box[1] < 457*scale < box[3])
+
+    def test_ultrawide_capture_uses_hud_rails_not_screen_edge_fractions(self):
+        with Image.open(self.fixture) as crop:
+            image=Image.new('RGB',(3440,1440),(80,90,110))
+            image.paste(crop,(1000,300))
+        reading=analyze_cockpit(image)
+        self.assertAlmostEqual(reading.horizon_y,833,delta=5)
+        self.assertTrue(2170 < reading.altitude_box[0] < 2190)
+        self.assertTrue(1140 < reading.speed_box[0] < 1170)
+
+    def test_missing_tape_does_not_produce_guessed_regions(self):
+        with Image.open(self.fixture) as source:
+            image=source.copy()
+        ImageDraw.Draw(image).rectangle((1080,100,1110,800),fill='black')
+        reading=analyze_cockpit(image)
+        self.assertIsNone(reading.altitude_box)
+        self.assertIsNone(reading.speed_box)
+
+    def test_isolated_readouts_require_labels_and_consistency(self):
+        altitude=parse_tape_readout('altitude','ALT 00 29841','29841 29841')
+        speed=parse_tape_readout('airspeed','SPEED 089','089')
+        self.assertEqual((altitude.value,altitude.unit),(29841,'FT'))
+        self.assertEqual((speed.value,speed.unit),(89,'KTS'))
+        self.assertIn('assumed',speed.reason)
+        for label,text in [('GS 87','087'),('SPEED','089 088'),('SPEED','O89'),('SPEED','SPEED 89'),('VERTICAL SPEED','89')]:
+            self.assertIsNone(parse_tape_readout('airspeed',label,text).value)
+
+    def test_conflicting_full_screen_value_is_not_silently_overridden(self):
+        full=parse_instruments('IAS 9 KTS')
+        result=reconcile_instruments(full,{'airspeed':parse_tape_readout('airspeed','SPEED','089')})
+        self.assertIsNone(result['airspeed'].value)
+        self.assertIn('disagree',result['airspeed'].reason)
+
+    def test_unit_aliases_do_not_create_false_source_disagreements(self):
+        full=parse_instruments('AIRSPEED 89 Knots IAS 89 KTS ALT 29841 FEET')
+        tape={'airspeed':parse_tape_readout('airspeed','SPEED','089'),
+              'altitude':parse_tape_readout('altitude','ALT','29841')}
+        combined=reconcile_instruments(full,tape)
+        self.assertEqual(combined['airspeed'].value,89)
+        self.assertEqual(combined['altitude'].value,29841)
+
+    def test_explicit_units_before_altitude_value(self):
+        self.assertEqual(parse_instruments('ALTITUDE ft 2040')['altitude'].value,2040)
 
 
 if __name__=='__main__': unittest.main()

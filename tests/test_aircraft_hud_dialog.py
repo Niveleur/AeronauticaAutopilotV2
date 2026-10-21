@@ -131,6 +131,40 @@ class DialogTests(unittest.TestCase):
         self.assertFalse(self.dialog.save_button.isEnabled())
         self.assertIn('not foreground',self.dialog.status.text())
 
+    def test_real_hud_worker_uses_isolated_crops_and_exports_them(self):
+        fixture=Path(__file__).parent/'fixtures'/'aircraft-tapes-29841ft-89kt.png'
+        with Image.open(fixture) as image:
+            worker=HudWorker(image.copy(),use_ocr=True)
+        results=[]
+        worker.completed.connect(results.append)
+        engine=Mock()
+        engine.extract_text.return_value='ALTITUDE 29841 GS 87 TAS 89'
+        def region_text(path):
+            name=Path(path).name
+            return {'altitude-label.png':'ALT 00 29841', 'altitude-digits.png':'29841 29841',
+                    'airspeed-label.png':'SPEED', 'airspeed-digits.png':'089'}[name]
+        engine.extract_region_text.side_effect=region_text
+        with patch('AeroHelper.ocr.normal_ocr.NormalOCR',return_value=engine):
+            worker.run()
+        self.assertEqual(len(results),1)
+        report=results[0]['report']
+        self.assertEqual(report['instruments']['altitude']['value'],29841)
+        self.assertEqual(report['instruments']['airspeed']['value'],89)
+        self.assertEqual(engine.extract_region_text.call_count,4)
+        self.assertIsNone(report['pitch_degrees'])
+        self.assertIsNone(report['roll_degrees'])
+        self.assertFalse(report['controls_enabled'])
+        self.dialog.show_result(results[0])
+        with tempfile.TemporaryDirectory() as tmp:
+            filename=str(Path(tmp)/'regions.zip')
+            with patch('AeroHelper.ui.aircraft_hud_dialog.QFileDialog.getSaveFileName',return_value=(filename,'ZIP')):
+                self.dialog.save_report()
+            with zipfile.ZipFile(filename) as archive:
+                self.assertIn('altitude-readout.png',archive.namelist())
+                self.assertIn('airspeed-readout.png',archive.namelist())
+                exported=json.loads(archive.read('report.json'))
+                self.assertEqual(exported['region_ocr']['airspeed']['digit_text'],'089')
+
     def test_import_and_worker_ocr_failures_are_diagnostic(self):
         with tempfile.TemporaryDirectory() as tmp:
             filename=str(Path(tmp)/'cockpit.png')

@@ -11,7 +11,9 @@ from PyQt5.QtCore import Qt, QThread, QTimer, pyqtSignal
 from PyQt5.QtGui import QImage, QPixmap
 from PyQt5.QtWidgets import (QApplication, QCheckBox, QDialog, QFileDialog,
                             QHBoxLayout, QLabel, QPushButton, QTextEdit, QVBoxLayout)
-from AeroHelper.automation.aircraft_hud import analyze_cockpit, parse_instruments
+from AeroHelper.automation.aircraft_hud import (analyze_cockpit, parse_instruments,
+                                                tape_digit_boxes, parse_tape_readout,
+                                                reconcile_instruments)
 from AeroHelper.utils.aircraft_capture import capture_roblox_client
 from AeroHelper.utils.window import bring_roblox_to_front
 
@@ -32,6 +34,7 @@ class HudWorker(QThread):
             self.captured.emit(image)
             reading = analyze_cockpit(image)
             text, ocr_status = '', 'OCR not requested'
+            region_ocr, tape_readings = {}, {}
             if self.use_ocr:
                 try:
                     # Existing platform-aware OCR pipeline, on a worker thread.
@@ -41,16 +44,36 @@ class HudWorker(QThread):
                         filename = str(Path(tmp) / 'cockpit.png')
                         image.save(filename)
                         text = engine.extract_text(filename)
+                        label_boxes = {'altitude': reading.altitude_box, 'airspeed': reading.speed_box}
+                        for name,box in tape_digit_boxes(reading).items():
+                            labels = image.crop(label_boxes[name])
+                            labels = labels.resize((labels.width*2,labels.height*2),Image.Resampling.LANCZOS)
+                            label_path = str(Path(tmp) / f'{name}-label.png')
+                            labels.save(label_path)
+                            label_text = engine.extract_region_text(label_path)
+                            digits = image.crop(box)
+                            digits = digits.resize((digits.width*3,digits.height*3),Image.Resampling.LANCZOS)
+                            digit_path = str(Path(tmp) / f'{name}-digits.png')
+                            digits.save(digit_path)
+                            digit_text = engine.extract_region_text(digit_path)
+                            region_ocr[name] = {'label_text': label_text, 'digit_text': digit_text,
+                                                'label_box': label_boxes[name], 'digit_box': box}
+                            tape_readings[name] = parse_tape_readout(name,label_text,digit_text)
                     ocr_status = 'OCR completed' if text.strip() else 'No OCR text returned; engine or model may be unavailable'
                 except Exception as exc:
                     ocr_status = f'OCR unavailable: {exc}'
+            full_screen_readings = parse_instruments(text)
+            instruments = reconcile_instruments(full_screen_readings,tape_readings)
             self.completed.emit({
                 'image': image, 'reading': reading,
                 'report': {'captured_utc': datetime.now(timezone.utc).isoformat(),
                            'source': 'imported screenshot' if self.image is not None else 'Roblox client',
                            'size': list(image.size), 'desktop_bounds': bounds,
                            'geometry': asdict(reading), 'ocr_status': ocr_status, 'raw_ocr': text,
-                           'instruments': {k: asdict(v) for k,v in parse_instruments(text).items()},
+                           'region_ocr': region_ocr,
+                           'full_screen_instruments': {k: asdict(v) for k,v in full_screen_readings.items()},
+                           'tape_instruments': {k: asdict(v) for k,v in tape_readings.items()},
+                           'instruments': {k: asdict(v) for k,v in instruments.items()},
                            'pitch_degrees': None, 'roll_degrees': None,
                            'controls_enabled': False}})
         except Exception as exc:
@@ -61,8 +84,8 @@ def annotated_image(image, reading):
     result = image.copy()
     draw = ImageDraw.Draw(result)
     width,height = result.size
-    for name,box in [('Altitude region (unverified)',reading.altitude_box),
-                     ('Airspeed region (unverified)',reading.speed_box)]:
+    for name,box in [('Altitude readout candidate',reading.altitude_box),
+                     ('Airspeed readout candidate',reading.speed_box)]:
         if box:
             draw.rectangle(box, outline='orange', width=max(1,width//600))
             draw.text((box[0],max(0,box[1]-14)),name,fill='orange')
@@ -221,9 +244,16 @@ class AircraftHudDialog(QDialog):
                     if reading.horizon_y is not None else 'Horizon unavailable. ')
         self.status.setText(geometry + f'Pixel support: {reading.horizon_confidence:.0%} (not accuracy). '
                             + reading.reason + '\n' + ' | '.join(values) + '\nPitch / roll: uncalibrated; no controls enabled.')
-        self.details.setPlainText(f"Source: {report['source']} | Resolution: {report['size']} | {report['captured_utc']}\n"
-                                  'Cyan: candidate line. Orange: suggested instrument regions, not confirmed locations.\n'
-                                  f"{report['ocr_status']}\nRaw OCR (inspect against screenshot):\n{report['raw_ocr'] or '(none)'}")
+        lines = [f"Source: {report['source']} | Resolution: {report['size']} | {report['captured_utc']}",
+                 'Cyan: candidate line. Orange: tape-derived readout regions. Tape-profile units assumed: feet / knots.',
+                 report['ocr_status']]
+        for name,candidate in report.get('tape_instruments',{}).items():
+            if candidate['value'] is not None:
+                lines.append(f"{name.title()} cropped candidate: {candidate['value']:g} {candidate['unit']} — {candidate['reason']}")
+        for name,region in report.get('region_ocr',{}).items():
+            lines.append(f"{name.title()} crop — label OCR: {region['label_text']} | digit OCR: {region['digit_text']}")
+        lines.extend(['Raw full-screen OCR (inspect against screenshot):',report['raw_ocr'] or '(none)'])
+        self.details.setPlainText('\n'.join(lines))
 
     def _render_preview(self):
         if getattr(self, '_preview_image', None) is None or not hasattr(self, 'preview'):
@@ -251,6 +281,11 @@ class AircraftHudDialog(QDialog):
                     buffer = io.BytesIO()
                     image.save(buffer,format='PNG')
                     archive.writestr(name,buffer.getvalue())
+                for name,region in self._payload['report'].get('region_ocr',{}).items():
+                    if name in ('altitude','airspeed'):
+                        buffer = io.BytesIO()
+                        self._payload['image'].crop(region['digit_box']).save(buffer,format='PNG')
+                        archive.writestr(f'{name}-readout.png',buffer.getvalue())
             self.details.append('\nDiagnostic ZIP saved. Review the images before sharing.')
         except Exception as exc:
             self.details.append(f'\nCould not save diagnostics: {exc}')

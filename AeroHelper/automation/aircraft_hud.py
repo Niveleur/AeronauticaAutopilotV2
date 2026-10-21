@@ -16,14 +16,53 @@ class CockpitReading:
     altitude_box: tuple | None
     speed_box: tuple | None
     reason: str = ''
+    tape_rails: tuple | None = None
+
+
+def _tape_layout(white):
+    """Locate paired long vertical HUD tape rails, not screen-sized guesses."""
+    h, w = white.shape
+    start, end = int(h*.05), int(h*.93)
+    columns = white[start:end].sum(axis=0)
+    xs = np.flatnonzero(columns > h*.24)
+    groups = np.split(xs, np.flatnonzero(np.diff(xs) > 1)+1)
+    rails = []
+    for group in groups:
+        if not len(group):
+            continue
+        x = int(np.median(group))
+        if not w*.18 < x < w*.82:
+            continue
+        rows = np.flatnonzero(white[start:end, max(0,x-1):x+2].any(axis=1)) + start
+        segments = np.split(rows, np.flatnonzero(np.diff(rows) > max(3,h*.008))+1)
+        segment = max(segments, key=len)
+        top,bottom = int(segment[0]),int(segment[-1])
+        if bottom-top > h*.25 and len(segment)/(bottom-top+1) > .85:
+            rails.append((x,top,bottom))
+    pairs = []
+    for left,top,bottom in rails:
+        for right,rt,rb in rails:
+            span = bottom-top
+            if (left < w/2 < right and abs((left+right)/2-w/2) < w*.04
+                    and .8 < (right-left)/span < 2.
+                    and abs(top-rt) < h*.025 and abs(bottom-rb) < h*.025):
+                pairs.append((span,left,right,top,bottom))
+    if not pairs:
+        return None
+    span,left,right,top,bottom = max(pairs)
+    mid = (top+bottom)/2
+    def box(a,b):
+        return (max(0,int(a)),max(0,int(mid-.14*span)),
+                min(w,int(b)),min(h,int(mid+.065*span)))
+    return (left,right,top,bottom), box(right+.13*span,right+.30*span), box(left-.30*span,left-.13*span)
 
 
 def analyze_cockpit(image):
     """Find a bilateral near-white line, including tilted candidates.
 
     Confidence means pixel support, not probability of a correct horizon.
-    Repeated ladder lines are rejected as ambiguous. Side crop boxes are only
-    suggested inspection regions, never a claim that the instruments are there.
+    Repeated ladder lines are rejected as ambiguous. Instrument regions are
+    derived from paired tape rails; unsupported layouts have no crop boxes.
     """
     rgb = np.asarray(image.convert('RGB') if hasattr(image, 'convert') else image)
     if rgb.ndim != 3 or rgb.shape[2] != 3 or not np.issubdtype(rgb.dtype, np.number):
@@ -31,18 +70,28 @@ def analyze_cockpit(image):
     h, w = rgb.shape[:2]
     if h < 120 or w < 200:
         return CockpitReading(None, None, 0., None, None, 'Image too small; use an original-resolution cockpit capture.')
-    altitude = (int(w*.67), int(h*.38), int(w*.78), int(h*.62))
-    speed = (int(w*.10), int(h*.38), int(w*.23), int(h*.62))
-    # Bound processing cost while preserving source-image coordinates.
-    from PIL import Image
+    channels = rgb.astype(np.float32)
+    native_white = (channels.min(axis=2) >= 185) & (np.ptp(channels, axis=2) < 48)
+    layout = _tape_layout(native_white)
+    rails,altitude,speed = layout if layout else (None,None,None)
+    # Bound line-search cost; pool the native mask to retain thin HUD lines.
     scale = min(1., 1000 / w)
     if scale < 1:
-        rgb = np.asarray(Image.fromarray(rgb.astype(np.uint8)).resize((int(w*scale), int(h*scale))))
-    sh, sw = rgb.shape[:2]
-    channels = rgb.astype(np.float32)
-    white = (channels.min(axis=2) >= 185) & (np.ptp(channels, axis=2) < 48)
+        import cv2
+        white = cv2.resize(native_white.astype(np.float32),
+                           (int(w*scale),int(h*scale)),interpolation=cv2.INTER_AREA) >= .20
+    else:
+        white = native_white
+    sh, sw = white.shape
     ys = np.arange(int(sh*.30), int(sh*.76))
-    spans = [np.arange(int(sw*a), int(sw*b)) for a,b in ((.09,.23),(.74,.88))]
+    if rails:
+        left,right,top,bottom = (value*scale for value in rails)
+        gap = right-left
+        spans = [np.arange(int(left+.12*gap),int(left+.35*gap)),
+                 np.arange(int(right-.35*gap),int(right-.12*gap))]
+        ys = np.arange(max(0,int(top)),min(sh,int(bottom)+1))
+    else:
+        spans = [np.arange(int(sw*a),int(sw*b)) for a,b in ((.09,.23),(.74,.88))]
     candidates = []
     # Scan slope directly: enough sampling to include tilted horizons without
     # treating the horizontal aircraft reference as calibrated pitch/roll.
@@ -61,16 +110,16 @@ def analyze_cockpit(image):
             candidates.append((float(scores[idx]), float(ys[idx]), float(slope)))
     if not candidates:
         return CockpitReading(None, None, 0., altitude, speed,
-                              'No supported bilateral horizon. Check cockpit view, HUD colour and scale.')
+                              'No supported bilateral horizon. Check cockpit view, HUD colour and scale.', rails)
     candidates.sort(reverse=True)
     score,y,slope = candidates[0]
     ambiguous = any(other >= score-.08 and abs(oy-y) > sh*.035
                     for other,oy,_ in candidates[1:])
     if ambiguous:
         return CockpitReading(None, None, score, altitude, speed,
-                              'Multiple supported lines; horizon is ambiguous (possible pitch ladder).')
+                              'Multiple supported lines; horizon is ambiguous (possible pitch ladder).', rails)
     return CockpitReading(y/scale, slope, score, altitude, speed,
-                          'Unverified line candidate. Pitch and roll require cockpit calibration.')
+                          'Unverified line candidate. Pitch and roll require cockpit calibration.', rails)
 
 
 @dataclass(frozen=True)
@@ -95,6 +144,11 @@ def parse_instruments(text):
         pattern = rf'\b{label}\s*[:=]?\s*(-?\d+(?:,\d{{3}})*(?:\.\d+)?)\s*({unit})\b'
         matches = {(float(m.group(1).replace(',','')), m.group(2).upper())
                    for m in re.finditer(pattern, text, re.IGNORECASE)}
+        unit_first = rf'\b{label}\s*[:=]?\s*({unit})\s+(-?\d+(?:,\d{{3}})*(?:\.\d+)?)\b'
+        matches.update((float(m.group(2).replace(',','')),m.group(1).upper())
+                       for m in re.finditer(unit_first,text,re.IGNORECASE))
+        aliases = {'KT':'KTS','KNOT':'KTS','KNOTS':'KTS','FEET':'FT'}
+        matches = {(value,aliases.get(unit,unit)) for value,unit in matches}
         if len(matches) != 1:
             reason = 'Conflicting labelled readings' if matches else 'No explicit label, value and unit'
             result[name] = InstrumentCandidate(None,None,reason)
@@ -104,4 +158,60 @@ def parse_instruments(text):
             result[name] = InstrumentCandidate(None,None,'Outside diagnostic range')
         else:
             result[name] = InstrumentCandidate(value,units,'Unverified single-frame OCR candidate')
+    return result
+
+
+def tape_digit_boxes(reading):
+    """Interior digit crops exclude tape ticks, labels and the readout border."""
+    if not reading.tape_rails:
+        return {}
+    _,_,top,bottom = reading.tape_rails
+    span = bottom-top
+    middle = (top+bottom)/2
+    inset_left = max(2,int(span*.02))
+    inset_right = max(2,int(span*.012))
+    return {name: (box[0]+inset_left,int(middle-.035*span),
+                   box[2]-inset_right,int(middle+.04*span))
+            for name,box in [('altitude',reading.altitude_box),('airspeed',reading.speed_box)]}
+
+
+def parse_tape_readout(name, label_text, digit_text):
+    """Require a recognised instrument label and an isolated numeric readout.
+
+    Units come from the experimental Aeronautica tape profile, not from OCR.
+    Missing labels, mixed text and disagreements between OCR engines fail closed.
+    """
+    labels = {'altitude': r'\bALT(?:ITUDE)?\b', 'airspeed': r'\b(?:SPEED|IAS|AIRSPEED)\b'}
+    units = {'altitude': 'FT', 'airspeed': 'KTS'}
+    if name not in labels:
+        raise ValueError('Unknown tape instrument')
+    if 'VERTICAL' in label_text.upper() or not re.search(labels[name],label_text,re.IGNORECASE):
+        return InstrumentCandidate(None,None,'Tape label not recognised')
+    if not digit_text.strip() or not re.fullmatch(r'[\d.,\s]+',digit_text):
+        return InstrumentCandidate(None,None,'Readout is not isolated numeric text')
+    try:
+        values = {float(token.replace(',','')) for token in digit_text.split()}
+    except ValueError:
+        return InstrumentCandidate(None,None,'Invalid numeric readout')
+    if len(values) != 1:
+        return InstrumentCandidate(None,None,'Conflicting cropped readouts')
+    value = values.pop()
+    if not 0 <= value <= (100000 if name == 'altitude' else 2000):
+        return InstrumentCandidate(None,None,'Outside diagnostic range')
+    return InstrumentCandidate(value,units[name],
+                               'Single-frame tape OCR; units assumed from Aeronautica HUD profile')
+
+
+def reconcile_instruments(full_screen, tape_readings):
+    result = dict(full_screen)
+    for name,candidate in tape_readings.items():
+        existing = result[name]
+        if candidate.value is None:
+            continue
+        if existing.value is not None and (existing.value,existing.unit) != (candidate.value,candidate.unit):
+            result[name] = InstrumentCandidate(
+                None,None,f'Full-screen and tape OCR disagree (full: {existing.value:g} {existing.unit}; '
+                f'crop: {candidate.value:g} {candidate.unit})')
+        else:
+            result[name] = candidate
     return result

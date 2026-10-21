@@ -640,6 +640,12 @@ class NormalOCR:
             if os.path.exists(roi_path):
                 os.unlink(roi_path)
 
+    def extract_region_text(self, image_path):
+        """Read an instrument crop without the full-screen waypoint fallback."""
+        native_text = self._native_ocr_extract(image_path)
+        easy_text = self._easyocr_extract(image_path)
+        return f'{native_text} {easy_text}'.strip()
+
     def extract_text(self, image_path, return_boxes=False):
         native_text = self._native_ocr_extract(image_path)
         easyocr_result = self._easyocr_extract(image_path, return_boxes=return_boxes)
