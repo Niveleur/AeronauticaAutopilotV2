@@ -1,0 +1,248 @@
+"""Read-only capture and diagnostics; deliberately contains no flight inputs."""
+from dataclasses import asdict
+from datetime import datetime, timezone
+import io
+import json
+from pathlib import Path
+import tempfile
+import zipfile
+from PIL import Image, ImageDraw
+from PyQt5.QtCore import Qt, QThread, QTimer, pyqtSignal
+from PyQt5.QtGui import QImage, QPixmap
+from PyQt5.QtWidgets import (QApplication, QCheckBox, QDialog, QFileDialog,
+                            QHBoxLayout, QLabel, QPushButton, QTextEdit, QVBoxLayout)
+from AeroHelper.automation.aircraft_hud import analyze_cockpit, parse_instruments
+from AeroHelper.utils.aircraft_capture import capture_roblox_client
+from AeroHelper.utils.window import bring_roblox_to_front
+
+
+class HudWorker(QThread):
+    captured = pyqtSignal(object)
+    completed = pyqtSignal(object)
+    failed = pyqtSignal(str)
+
+    def __init__(self, image=None, use_ocr=False, parent=None):
+        super().__init__(parent)
+        self.image = image
+        self.use_ocr = use_ocr
+
+    def run(self):
+        try:
+            image, bounds = (self.image.copy(), None) if self.image is not None else capture_roblox_client()
+            self.captured.emit(image)
+            reading = analyze_cockpit(image)
+            text, ocr_status = '', 'OCR not requested'
+            if self.use_ocr:
+                try:
+                    # Existing platform-aware OCR pipeline, on a worker thread.
+                    from AeroHelper.ocr.normal_ocr import NormalOCR
+                    engine = NormalOCR()
+                    with tempfile.TemporaryDirectory(prefix='aerohelper_hud_') as tmp:
+                        filename = str(Path(tmp) / 'cockpit.png')
+                        image.save(filename)
+                        text = engine.extract_text(filename)
+                    ocr_status = 'OCR completed' if text.strip() else 'No OCR text returned; engine or model may be unavailable'
+                except Exception as exc:
+                    ocr_status = f'OCR unavailable: {exc}'
+            self.completed.emit({
+                'image': image, 'reading': reading,
+                'report': {'captured_utc': datetime.now(timezone.utc).isoformat(),
+                           'source': 'imported screenshot' if self.image is not None else 'Roblox client',
+                           'size': list(image.size), 'desktop_bounds': bounds,
+                           'geometry': asdict(reading), 'ocr_status': ocr_status, 'raw_ocr': text,
+                           'instruments': {k: asdict(v) for k,v in parse_instruments(text).items()},
+                           'pitch_degrees': None, 'roll_degrees': None,
+                           'controls_enabled': False}})
+        except Exception as exc:
+            self.failed.emit(str(exc))
+
+
+def annotated_image(image, reading):
+    result = image.copy()
+    draw = ImageDraw.Draw(result)
+    width,height = result.size
+    for name,box in [('Altitude region (unverified)',reading.altitude_box),
+                     ('Airspeed region (unverified)',reading.speed_box)]:
+        if box:
+            draw.rectangle(box, outline='orange', width=max(1,width//600))
+            draw.text((box[0],max(0,box[1]-14)),name,fill='orange')
+    if reading.horizon_y is not None:
+        slope = reading.horizon_slope or 0.
+        draw.line([(0,reading.horizon_y-slope*width/2),
+                   (width-1,reading.horizon_y+slope*(width-1-width/2))],
+                  fill='cyan',width=max(1,width//500))
+    return result
+
+
+class AircraftHudDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle('Aircraft HUD Test — read-only')
+        self.resize(960,760)
+        self.worker = None
+        self._hidden_windows = []
+        self._busy = False
+        self._payload = None
+        self._preview_image = None
+        layout = QVBoxLayout(self)
+        instructions = QLabel('Enter cockpit view first. Capture hides AeroHelper for 3 seconds; switch to Roblox if needed. '
+                              'Only the foreground Roblox client is captured, including on another monitor. '
+                              'No flight inputs are sent. Stop existing automation before testing.')
+        instructions.setWordWrap(True)
+        layout.addWidget(instructions)
+        buttons = QHBoxLayout()
+        self.capture_button = QPushButton('Capture Roblox HUD (3s)')
+        self.open_button = QPushButton('Open screenshot…')
+        self.save_button = QPushButton('Save diagnostic ZIP…')
+        self.save_button.setEnabled(False)
+        for button in (self.capture_button,self.open_button,self.save_button): buttons.addWidget(button)
+        layout.addLayout(buttons)
+        self.ocr_box = QCheckBox('Read OCR too (experimental; first use may download models)')
+        layout.addWidget(self.ocr_box)
+        self.status = QLabel('Waiting for capture. Pitch / roll: uncalibrated. Altitude / airspeed: unavailable.')
+        self.status.setWordWrap(True)
+        layout.addWidget(self.status)
+        self.preview = QLabel('Captured image and candidate overlays will appear here.')
+        self.preview.setAlignment(Qt.AlignCenter)
+        self.preview.setMinimumSize(400,240)
+        layout.addWidget(self.preview,1)
+        self.details = QTextEdit()
+        self.details.setReadOnly(True)
+        self.details.setMaximumHeight(210)
+        layout.addWidget(self.details)
+        self.capture_button.clicked.connect(self.begin_capture)
+        self.open_button.clicked.connect(self.open_image)
+        self.save_button.clicked.connect(self.save_report)
+        self._capture_timer = QTimer(self)
+        self._capture_timer.setSingleShot(True)
+        self._capture_timer.timeout.connect(self._start_live_worker)
+
+    def set_busy(self, busy):
+        self._busy = busy
+        self.capture_button.setEnabled(not busy)
+        self.open_button.setEnabled(not busy)
+        self.ocr_box.setEnabled(not busy)
+        self.save_button.setEnabled(not busy and self._payload is not None)
+
+    def begin_capture(self):
+        if self._busy:
+            return
+        self.set_busy(True)
+        self.status.setText('Capturing Roblox after 3 seconds. Switch to cockpit view now…')
+        self._hidden_windows = [w for w in QApplication.topLevelWidgets() if w.isVisible()]
+        for widget in self._hidden_windows:
+            widget.hide()
+        # Focus is best-effort; capture independently verifies the foreground.
+        try:
+            bring_roblox_to_front()
+        except Exception:
+            pass
+        self._capture_timer.start(3000)
+
+    def _restore_windows(self, *unused):
+        for widget in self._hidden_windows:
+            widget.show()
+        self._hidden_windows = []
+        self.show()
+        self.raise_()
+        self.activateWindow()
+
+    def _start_live_worker(self):
+        self._start_worker()
+
+    def _start_worker(self, image=None):
+        self.set_busy(True)
+        self.status.setText('Processing captured frame…' if image is not None else 'Capturing and processing Roblox…')
+        self.worker = HudWorker(image, self.ocr_box.isChecked(), self)
+        self.worker.captured.connect(self._restore_windows)
+        self.worker.completed.connect(self.show_result)
+        self.worker.failed.connect(self.show_failure)
+        self.worker.finished.connect(self._worker_finished)
+        self.worker.start()
+
+    def _worker_finished(self):
+        self.set_busy(False)
+        self.worker.deleteLater()
+        self.worker = None
+
+    def open_image(self):
+        filename,_ = QFileDialog.getOpenFileName(self,'Open original-resolution cockpit screenshot','','Images (*.png *.jpg *.jpeg *.bmp)')
+        if not filename:
+            return
+        try:
+            with Image.open(filename) as source:
+                image = source.convert('RGB')
+            self._start_worker(image)
+        except Exception as exc:
+            self.show_failure(str(exc))
+
+    def show_failure(self, message):
+        self._restore_windows()
+        self._payload = None
+        self._preview_image = None
+        self.preview.clear()
+        self.details.clear()
+        self.save_button.setEnabled(False)
+        self.status.setText(f'Capture / analysis failed: {message}')
+
+    def show_result(self, payload):
+        self._restore_windows()
+        self._payload = payload
+        reading,report = payload['reading'],payload['report']
+        self._preview_image = annotated_image(payload['image'],reading)
+        self._render_preview()
+        values = []
+        for name,candidate in report['instruments'].items():
+            value = candidate['value']
+            values.append(f"{name.title()}: {value:g} {candidate['unit']} (unverified)" if value is not None
+                          else f"{name.title()}: unavailable — {candidate['reason']}")
+        geometry = (f'Horizon candidate at Y={reading.horizon_y:.1f}px; slope={reading.horizon_slope:.3f}. '
+                    if reading.horizon_y is not None else 'Horizon unavailable. ')
+        self.status.setText(geometry + f'Pixel support: {reading.horizon_confidence:.0%} (not accuracy). '
+                            + reading.reason + '\n' + ' | '.join(values) + '\nPitch / roll: uncalibrated; no controls enabled.')
+        self.details.setPlainText(f"Source: {report['source']} | Resolution: {report['size']} | {report['captured_utc']}\n"
+                                  'Cyan: candidate line. Orange: suggested instrument regions, not confirmed locations.\n'
+                                  f"{report['ocr_status']}\nRaw OCR (inspect against screenshot):\n{report['raw_ocr'] or '(none)'}")
+
+    def _render_preview(self):
+        if self._preview_image is None:
+            return
+        image = self._preview_image
+        data = image.tobytes('raw','RGB')
+        qimage = QImage(data,image.width,image.height,image.width*3,QImage.Format_RGB888).copy()
+        self.preview.setPixmap(QPixmap.fromImage(qimage).scaled(self.preview.size(),Qt.KeepAspectRatio,Qt.SmoothTransformation))
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._render_preview()
+
+    def save_report(self):
+        if self._payload is None:
+            return
+        filename,_ = QFileDialog.getSaveFileName(self,'Save diagnostics (includes visible Roblox image and OCR)',
+                                                'aircraft-hud-diagnostic.zip','ZIP (*.zip)')
+        if not filename:
+            return
+        try:
+            with zipfile.ZipFile(filename,'w',compression=zipfile.ZIP_DEFLATED) as archive:
+                archive.writestr('report.json',json.dumps(self._payload['report'],indent=2))
+                for name,image in [('cockpit.png',self._payload['image']),('annotated.png',self._preview_image)]:
+                    buffer = io.BytesIO()
+                    image.save(buffer,format='PNG')
+                    archive.writestr(name,buffer.getvalue())
+            self.details.append('\nDiagnostic ZIP saved. Review the images before sharing.')
+        except Exception as exc:
+            self.details.append(f'\nCould not save diagnostics: {exc}')
+
+    def reject(self):
+        # A running QThread must finish before the dialog can be destroyed.
+        if self._busy:
+            self.status.setText('Capture / OCR is still running. Wait for the result before closing.')
+            return
+        super().reject()
+
+    def closeEvent(self, event):
+        if self._busy:
+            event.ignore()
+        else:
+            super().closeEvent(event)

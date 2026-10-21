@@ -261,31 +261,21 @@ class MainWindow(QMainWindow):
         action.triggered.connect(self._open_aircraft_hud_test)
 
     def _open_aircraft_hud_test(self):
-        from PIL import ImageGrab
-        from AeroHelper.automation.aircraft_hud import analyze_cockpit
-        dialog = QDialog(self)
-        dialog.setWindowTitle('Aircraft HUD Test (read-only)')
-        dialog.resize(480, 220)
-        layout = QVBoxLayout(dialog)
-        info = QLabel('Keep Roblox in cockpit view. Captures the visible desktop. No flight controls are sent.')
-        info.setWordWrap(True)
-        layout.addWidget(info)
-        result = QLabel('Waiting for capture')
-        result.setWordWrap(True)
-        layout.addWidget(result)
-        capture = QPushButton('Capture HUD')
-        layout.addWidget(capture)
-        def run_capture():
-            try:
-                reading = analyze_cockpit(ImageGrab.grab())
-                if reading.horizon_y is None:
-                    result.setText('No confident horizon found; ensure cockpit HUD is visible.')
-                else:
-                    result.setText('Horizon candidate Y: {:.0f}px; confidence: {:.0%}. Pitch and roll not calibrated.'.format(reading.horizon_y, reading.horizon_confidence))
-            except Exception as exc:
-                result.setText('Capture failed: {}'.format(exc))
-        capture.clicked.connect(run_capture)
-        dialog.exec_()
+        if self.is_running:
+            self._show_message_dialog(QMessageBox.Warning, 'Stop automation first',
+                                      'Stop the current automation before opening the read-only Aircraft HUD Test.')
+            return
+        from AeroHelper.ui.aircraft_hud_dialog import AircraftHudDialog
+        dialog = getattr(self, '_aircraft_hud_dialog', None)
+        if dialog is None:
+            dialog = AircraftHudDialog(self)
+            self._aircraft_hud_dialog = dialog
+        # hide() ends QDialog.exec_(). Keep a persistent modal window instead
+        # so the capture countdown can hide it without ending its lifetime.
+        dialog.setWindowModality(Qt.ApplicationModal)
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
 
     def _webhook_display_text(self):
         val = self._webhook_value.strip()

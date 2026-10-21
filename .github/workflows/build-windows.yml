@@ -25,6 +25,12 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r AeroHelper/requirements.txt
           python -m pip install pyinstaller==6.16.0
+      - name: Test read-only aircraft HUD diagnostics
+        shell: pwsh
+        env:
+          QT_QPA_PLATFORM: offscreen
+          PYNPUT_BACKEND: dummy
+        run: python -m unittest discover -s tests -v
       - name: Bundle standalone GUI application
         shell: pwsh
         run: |

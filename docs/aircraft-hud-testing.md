@@ -1,0 +1,61 @@
+# Aircraft HUD diagnostics
+
+This is a read-only experiment. Existing boat/airship automation is unchanged.
+No aircraft flight inputs or calibrated pitch/roll readings have been added.
+Upstream AeroHelper's MIT license and attribution remain in place.
+
+## Windows GUI workflow
+
+1. Open the packaged application and stop any running automation.
+2. Enter a conventional aircraft's cockpit view in Roblox. Keep the HUD visible.
+3. Open **Aircraft HUD Test**, then **Capture Roblox HUD (3s)**.
+   AeroHelper's visible windows disappear during the three-second delay. It tries
+   to bring Roblox forward; if Windows prevents that, switch to Roblox yourself.
+   Capture requires Roblox to remain in front. The client area is used rather
+   than the whole desktop, including when Roblox is on a second monitor.
+4. Inspect the image after AeroHelper returns. Cyan is a *candidate* line;
+   orange boxes are suggested instrument inspection regions, not verified tape
+   locations. A high pixel-support score is not recognition accuracy.
+5. Optionally enable **Read OCR too** and capture again. The existing OCR pipeline
+   runs in the background; initial model loading/download can take time. Inspect
+   the raw text against the image. Only explicitly labelled altitude/airspeed
+   with units are reported; conflicting or missing values remain unavailable.
+   Unlabelled tape numbers deliberately do not produce a reading.
+6. Use **Save diagnostic ZIP** to save the original image, annotated image and
+   JSON report. Review visible game/player information before sharing. No files
+   are uploaded automatically. **Open screenshot** also supports offline review.
+
+A foreground check cannot rule out another application's always-on-top overlay.
+Inspect each captured image. Black frames and focus changes are rejected; use
+windowed/borderless mode if capture fails. Live capture requires Windows; offline
+image inspection works on the cloud machine. The diagnostic window must finish
+capture/OCR before closing; it never enables automated flight controls.
+
+## Required evidence before calibrated attitude or control
+
+Collect original-resolution diagnostic ZIPs from the actual EXE for:
+
+- Straight-and-level flight, several known nose-up/nose-down attitudes, and left
+  and right banks. Include readable cockpit pitch marks and bank reference.
+- At least two conventional aircraft, different cockpit zoom levels/resolutions,
+  daylight/night/clouds and bright terrain. Include scenes with no visible HUD.
+- Several independently readable altitudes and airspeeds; record exact units.
+- Windowed/fullscreen and second-monitor captures. Confirm AeroHelper is absent
+  from the saved original image and the client crop contains the whole HUD.
+
+Annotate the actual zero-pitch line, ladder spacing, fixed aircraft reference,
+roll reference, tape/digital readout locations, units and expected values. The
+current bilateral white-line search can mistake scenery/reference marks for a
+horizon, even when its support is high; it is not a general attitude estimator.
+Pitch needs a validated reference and scale; screen-line slope alone is not a
+calibrated bank angle. Real annotated fixtures, temporal consistency/dropout
+checks, independent pitch/roll validation and an explicit disarm path are needed
+before any flight inputs. Do not use an unverified single frame for control.
+
+## Development validation
+
+Run `python -m unittest discover -s tests -v` with the declared dependencies.
+The suite includes synthetic geometry/label parsing, mocked Windows capture,
+worker error handling, offscreen Qt rendering/restoration and diagnostic export.
+Synthetic/mocked checks do not establish real-game recognition or Windows EXE
+runtime behavior. GitHub Actions runs this suite before packaging the EXE.
