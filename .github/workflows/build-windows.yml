@@ -31,10 +31,14 @@ jobs:
           QT_QPA_PLATFORM: offscreen
           PYNPUT_BACKEND: dummy
         run: python -m unittest discover -s tests -v
+      - name: Record build identity
+        shell: pwsh
+        run: |
+          @{ commit = $env:GITHUB_SHA; run_id = $env:GITHUB_RUN_ID } | ConvertTo-Json | Set-Content -Encoding utf8 build-info.json
       - name: Bundle standalone GUI application
         shell: pwsh
         run: |
-          python -m PyInstaller --noconfirm --clean --windowed --onedir --name AeronauticaAutopilotV2 --collect-all easyocr --collect-all torch --collect-all torchvision --collect-submodules winsdk AeroHelper/main.py
+          python -m PyInstaller --noconfirm --clean --windowed --onedir --name AeronauticaAutopilotV2 --add-data "build-info.json;." --collect-all easyocr --collect-all torch --collect-all torchvision --collect-submodules winsdk AeroHelper/main.py
       - name: Verify EXE exists
         shell: pwsh
         run: |

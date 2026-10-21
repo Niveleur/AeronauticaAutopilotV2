@@ -27,6 +27,7 @@ from PyQt5.QtCore import Qt, QTimer, pyqtSignal, pyqtSlot
 from PyQt5.QtGui import QFont, QPalette, QColor, QKeySequence
 from AeroHelper.config import Config, API_BASE, format_hotkey, normalize_hotkey
 from AeroHelper.logger import default_log_path
+from AeroHelper.utils.build_info import build_revision, hud_failure_summary
 from AeroHelper.ui.app_icon import load_app_icon, load_app_pixmap
 from AeroHelper.utils.platform import IS_MACOS, IS_WINDOWS, get_app_font_family, get_macos_permission_summary, get_os_display_name, is_windows_elevated_admin
 from AeroHelper.utils.update_cleanup import schedule_frozen_update_cleanup
@@ -271,7 +272,8 @@ class MainWindow(QMainWindow):
             # A windowed EXE has no console; keep the main window and show the
             # failure instead of letting an unhandled Qt callback end the app.
             import traceback
-            details = traceback.format_exc()
+            summary = hud_failure_summary(exc)
+            details = summary + '\n\n' + traceback.format_exc()
             log_note = ''
             try:
                 log_path = default_log_path()
@@ -282,7 +284,7 @@ class MainWindow(QMainWindow):
                 pass
             self.show()
             self._show_message_dialog(QMessageBox.Critical, 'Aircraft HUD Test could not open',
-                                      f'{exc}\nAeroHelper is still running.{log_note}')
+                                      f'{summary}\n\nAeroHelper is still running.{log_note}')
 
     def _webhook_display_text(self):
         val = self._webhook_value.strip()
@@ -1222,7 +1224,7 @@ class MainWindow(QMainWindow):
 
     def init_ui(self):
         title = f'AeroHelper {self.version}' if self.version else 'AeroHelper'
-        self.setWindowTitle(title)
+        self.setWindowTitle(f'{title} — build {build_revision()}')
         icon = load_app_icon()
         if not icon.isNull():
             self.setWindowIcon(icon)

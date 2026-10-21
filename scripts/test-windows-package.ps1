@@ -31,6 +31,9 @@ try {
     if (!(Test-Path -LiteralPath $ReportPath)) { throw 'Packaged HUD smoke report missing' }
     $result = Get-Content -LiteralPath $ReportPath -Raw | ConvertFrom-Json
     Get-Content -LiteralPath $ReportPath
+    if ($env:GITHUB_SHA -and $result.build_revision -ne $env:GITHUB_SHA.Substring(0, 7)) {
+        throw 'Packaged EXE build identity does not match this workflow'
+    }
     if ($process.ExitCode -ne 0 -or !$result.ok -or !$result.frozen) {
         throw 'Packaged Windows HUD smoke test failed'
     }

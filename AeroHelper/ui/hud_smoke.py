@@ -7,10 +7,12 @@ from PIL import Image
 from PyQt5.QtCore import QTimer
 from PyQt5.QtWidgets import QMainWindow
 from AeroHelper.ui.main_window import MainWindow
+from AeroHelper.utils.build_info import build_revision
 
 
 def run_hud_smoke(app, report_path):
-    report = {'ok': False, 'frozen': bool(getattr(sys, 'frozen', False))}
+    report = {'ok': False, 'frozen': bool(getattr(sys, 'frozen', False)),
+              'build_revision': build_revision()}
     host = QMainWindow()
     host.is_running = False
     done = False
