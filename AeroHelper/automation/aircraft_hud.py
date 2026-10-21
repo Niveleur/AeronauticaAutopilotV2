@@ -244,3 +244,75 @@ def reconcile_instruments(full_screen, tape_readings):
         else:
             result[name] = candidate
     return result
+
+
+ALTITUDE_TOLERANCE_FT = 5.0
+
+
+def side_panel_altitude_box(size):
+    """Separate left-panel OCR region, available even without cockpit tapes.
+
+    This deliberately excludes the central HUD. Readings still require the
+    explicit ALTITUDE label and feet unit, so other panel/dial numbers are ignored.
+    """
+    width,height = size
+    if width < 200 or height < 120:
+        return None
+    return (0,int(height*.25),int(min(width*.16,height*.28)),int(height*.95))
+
+
+def parse_side_panel_altitude(text):
+    number = r'(-?\d+(?:,\d{3})*(?:\.\d+)?)'
+    patterns = (rf'\bALTITUDE\s*[:=]?\s*{number}\s*(?:FT|FEET)\b(?!\s*/)',
+                rf'\bALTITUDE\s*[:=]?\s*(?:FT|FEET)\s*{number}\b')
+    values = {float(match.group(1).replace(',',''))
+              for pattern in patterns for match in re.finditer(pattern,text,re.IGNORECASE)}
+    if len(values) != 1:
+        return InstrumentCandidate(None,None,'Left-panel ALTITUDE label, feet unit and unique value required')
+    value = values.pop()
+    if not -2000 <= value <= 100000:
+        return InstrumentCandidate(None,None,'Left-panel altitude outside diagnostic range')
+    return InstrumentCandidate(value,'FT','Separate left-panel OCR; single frame')
+
+
+@dataclass(frozen=True)
+class AltitudeAssessment:
+    cockpit: InstrumentCandidate
+    side_panel: InstrumentCandidate
+    selected: InstrumentCandidate
+    status: str
+    difference_ft: float | None
+    tolerance_ft: float = ALTITUDE_TOLERANCE_FT
+
+
+def assess_altitude(cockpit, side_panel, tolerance_ft=ALTITUDE_TOLERANCE_FT):
+    """Cross-check same-frame sources; a lone source is explicitly unconfirmed."""
+    from math import isfinite
+    if not isfinite(tolerance_ft) or tolerance_ft < 0:
+        raise ValueError('Altitude tolerance must be finite and nonnegative')
+    def usable(reading):
+        return (reading.value is not None and reading.unit == 'FT'
+                and isfinite(reading.value) and -2000 <= reading.value <= 100000)
+    cockpit_ok,panel_ok = usable(cockpit),usable(side_panel)
+    difference = None
+    if cockpit_ok and panel_ok:
+        difference = abs(cockpit.value-side_panel.value)
+        if difference <= tolerance_ft:
+            status = 'agree'
+            selected = InstrumentCandidate(cockpit.value,'FT',
+                f'Cockpit and left panel agree within {tolerance_ft:g} ft (difference {difference:g} ft); single frame')
+        else:
+            status = 'disagree'
+            selected = InstrumentCandidate(None,None,
+                f'Altitude disagreement: cockpit {cockpit.value:g} ft, left panel {side_panel.value:g} ft '
+                f'(difference {difference:g} ft exceeds {tolerance_ft:g} ft)')
+    elif cockpit_ok:
+        status = 'cockpit_only'
+        selected = InstrumentCandidate(cockpit.value,'FT','Cockpit only; left panel unavailable, not cross-checked')
+    elif panel_ok:
+        status = 'side_panel_fallback'
+        selected = InstrumentCandidate(side_panel.value,'FT','Left-panel fallback; cockpit unavailable, not cross-checked')
+    else:
+        status = 'unavailable'
+        selected = InstrumentCandidate(None,None,'No usable cockpit or left-panel altitude in feet')
+    return AltitudeAssessment(cockpit,side_panel,selected,status,difference,tolerance_ft)

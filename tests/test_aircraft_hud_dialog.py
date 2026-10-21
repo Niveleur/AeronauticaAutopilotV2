@@ -140,6 +140,7 @@ class DialogTests(unittest.TestCase):
         engine=Mock()
         engine.extract_text.return_value='ALTITUDE 29841 GS 87 TAS 89'
         def region_text(path):
+            if Path(path).name == 'side-panel-altitude.png': return ''
             name=Path(path).name
             return {'altitude-label.png':'ALT 00 29841', 'altitude-digits.png':'29841 29841',
                     'airspeed-label.png':'SPEED', 'airspeed-digits.png':'089'}[name]
@@ -150,7 +151,7 @@ class DialogTests(unittest.TestCase):
         report=results[0]['report']
         self.assertEqual(report['instruments']['altitude']['value'],29841)
         self.assertEqual(report['instruments']['airspeed']['value'],89)
-        self.assertEqual(engine.extract_region_text.call_count,4)
+        self.assertEqual(engine.extract_region_text.call_count,5)
         self.assertIsNone(report['pitch_degrees'])
         self.assertIsNone(report['roll_degrees'])
         self.assertFalse(report['controls_enabled'])
@@ -173,6 +174,7 @@ class DialogTests(unittest.TestCase):
         engine=Mock()
         engine.extract_text.return_value=''
         def region_text(path):
+            if Path(path).name == 'side-panel-altitude.png': return ''
             return {'altitude-label.png':'ILT','altitude-label-wide.png':'ALT 00 29841',
                     'altitude-digits.png':'29841','airspeed-label.png':'SPEED',
                     'airspeed-digits.png':'089'}[Path(path).name]
@@ -194,6 +196,7 @@ class DialogTests(unittest.TestCase):
         engine=Mock()
         engine.extract_text.return_value='AIRSPEED 88 Knots ALTITUDE 29659 VERTICAL SPEED 0.1 ft/s'
         def region_text(path):
+            if Path(path).name == 'side-panel-altitude.png': return ''
             return {'altitude-label.png':'AT','altitude-digits.png':'29659',
                     'airspeed-label.png':'SPEED','airspeed-digits.png':'088',
                     'altitude-label-wide.png':'29659'}[Path(path).name]
@@ -204,6 +207,50 @@ class DialogTests(unittest.TestCase):
         self.assertEqual(report['instruments']['altitude']['value'],29659)
         self.assertEqual(report['instruments']['airspeed']['value'],88)
         self.assertIn('confirmed',report['tape_instruments']['altitude']['reason'])
+        self.assertFalse(report['controls_enabled'])
+
+    def test_panel_comparison_is_visible_and_exported_with_five_foot_tolerance(self):
+        fixture=Path(__file__).parent/'fixtures'/'aircraft-tapes-night-29659ft-88kt.png'
+        with Image.open(fixture) as image: worker=HudWorker(image.copy(),use_ocr=True)
+        results=[]
+        worker.completed.connect(results.append)
+        engine=Mock()
+        engine.extract_text.return_value='ALTITUDE 29664 ft AIRSPEED 88 Knots'
+        def region_text(path):
+            return {'side-panel-altitude.png':'ALTITUDE 29664 ft VERTICAL SPEED 0.1 ft/s',
+                    'altitude-label.png':'ALT','altitude-digits.png':'29659',
+                    'airspeed-label.png':'SPEED','airspeed-digits.png':'088'}[Path(path).name]
+        engine.extract_region_text.side_effect=region_text
+        with patch('AeroHelper.ocr.normal_ocr.NormalOCR',return_value=engine):worker.run()
+        report=results[0]['report']
+        self.assertEqual(report['altitude_check']['status'],'agree')
+        self.assertEqual(report['altitude_check']['difference_ft'],5)
+        self.assertEqual(report['instruments']['altitude']['value'],29659)
+        self.dialog.show_result(results[0])
+        self.assertIn('difference 5 ft',self.dialog.status.text())
+        self.assertIn('left panel 29664 FT',self.dialog.status.text())
+        with tempfile.TemporaryDirectory() as tmp:
+            filename=str(Path(tmp)/'altitude-sources.zip')
+            with patch('AeroHelper.ui.aircraft_hud_dialog.QFileDialog.getSaveFileName',return_value=(filename,'ZIP')):
+                self.dialog.save_report()
+            with zipfile.ZipFile(filename) as archive:
+                self.assertIn('side-panel-altitude.png',archive.namelist())
+                data=json.loads(archive.read('report.json'))
+                self.assertEqual(data['altitude_check']['difference_ft'],5)
+                self.assertEqual(data['altitude_check']['side_panel']['value'],29664)
+
+    def test_panel_fallback_survives_a_full_screen_ocr_failure(self):
+        worker=HudWorker(Image.new('RGB',(3440,1440),'navy'),use_ocr=True)
+        results=[]
+        worker.completed.connect(results.append)
+        engine=Mock()
+        engine.extract_region_text.return_value='ALTITUDE 29659 ft'
+        engine.extract_text.side_effect=RuntimeError('full-screen OCR failed')
+        with patch('AeroHelper.ocr.normal_ocr.NormalOCR',return_value=engine):worker.run()
+        report=results[0]['report']
+        self.assertEqual(report['altitude_check']['status'],'side_panel_fallback')
+        self.assertEqual(report['instruments']['altitude']['value'],29659)
+        self.assertIn('partially available',report['ocr_status'])
         self.assertFalse(report['controls_enabled'])
 
     def test_import_and_worker_ocr_failures_are_diagnostic(self):

@@ -94,3 +94,25 @@ A second central-HUD fixture covers a night capture at 29,659 ft / 88 knots.
 Its original combined label/readout crop lost ALT to overlapping tape ticks.
 The separate label crop and exact-value corroboration path are regression-tested;
 missing, truncated or conflicting corroborating values are rejected.
+
+## Altitude cross-check and backup
+
+Each OCR capture reads the cockpit altitude crop and a separate left-panel
+region from the **same image**. The panel requires an explicit ALTITUDE label,
+a unique numeric value and feet unit; it works even if cockpit tapes are absent.
+Full-screen OCR is retained for diagnostics, but is not counted as a third source
+because it includes the same left panel.
+
+- Both sources present, difference **at most 5 ft**: report agreement and retain
+  the cockpit value (no averaging).
+- Both present, difference **greater than 5 ft**: flag disagreement and withhold
+  the combined altitude.
+- Cockpit unreadable, panel readable: use an explicitly marked, unconfirmed
+  left-panel fallback.
+- Panel unreadable, cockpit readable: retain an explicitly unconfirmed cockpit
+  reading. No usable source: altitude remains unavailable.
+
+The GUI shows both values, difference, tolerance and source status. The ZIP
+contains the source readings, comparison and left-panel crop/OCR. No values are
+carried over from previous frames. Agreement is a single-frame OCR cross-check,
+not calibrated accuracy or permission to enable flight controls.

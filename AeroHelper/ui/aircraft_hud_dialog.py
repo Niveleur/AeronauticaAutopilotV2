@@ -13,7 +13,9 @@ from PyQt5.QtWidgets import (QApplication, QCheckBox, QDialog, QFileDialog,
                             QHBoxLayout, QLabel, QPushButton, QTextEdit, QVBoxLayout)
 from AeroHelper.automation.aircraft_hud import (analyze_cockpit, parse_instruments,
                                                 tape_digit_boxes, tape_label_boxes, tape_label_recognized, parse_tape_readout,
-                                                reconcile_instruments)
+                                                reconcile_instruments, InstrumentCandidate,
+                                                side_panel_altitude_box, parse_side_panel_altitude,
+                                                assess_altitude)
 from AeroHelper.utils.aircraft_capture import capture_roblox_client
 from AeroHelper.utils.window import bring_roblox_to_front
 
@@ -35,6 +37,8 @@ class HudWorker(QThread):
             reading = analyze_cockpit(image)
             text, ocr_status = '', 'OCR not requested'
             region_ocr, tape_readings = {}, {}
+            panel_reading = InstrumentCandidate(None,None,'Left-panel OCR not requested')
+            panel_ocr = {'box': side_panel_altitude_box(image.size), 'text': '', 'error': None}
             if self.use_ocr:
                 try:
                     # Existing platform-aware OCR pipeline, on a worker thread.
@@ -43,6 +47,17 @@ class HudWorker(QThread):
                     with tempfile.TemporaryDirectory(prefix='aerohelper_hud_') as tmp:
                         filename = str(Path(tmp) / 'cockpit.png')
                         image.save(filename)
+                        if panel_ocr['box'] is not None:
+                            try:
+                                panel = image.crop(panel_ocr['box'])
+                                panel = panel.resize((panel.width*2,panel.height*2),Image.Resampling.LANCZOS)
+                                panel_path = str(Path(tmp) / 'side-panel-altitude.png')
+                                panel.save(panel_path)
+                                panel_ocr['text'] = engine.extract_region_text(panel_path)
+                                panel_reading = parse_side_panel_altitude(panel_ocr['text'])
+                            except Exception as exc:
+                                panel_ocr['error'] = str(exc)
+                                panel_reading = InstrumentCandidate(None,None,'Left-panel OCR failed')
                         text = engine.extract_text(filename)
                         label_boxes = tape_label_boxes(reading)
                         for name,box in tape_digit_boxes(reading).items():
@@ -70,12 +85,18 @@ class HudWorker(QThread):
                                                 'label_box': label_boxes[name], 'digit_box': box,
                                                 'label_attempts': label_attempts}
                             tape_readings[name] = parse_tape_readout(name,label_text,digit_text,full_text=text)
-                    has_text = text.strip() or any(region['digit_text'].strip() for region in region_ocr.values())
+                    has_text = panel_ocr['text'].strip() or text.strip() or any(region['digit_text'].strip() for region in region_ocr.values())
                     ocr_status = 'OCR completed' if has_text else 'No OCR text returned; engine or model may be unavailable'
                 except Exception as exc:
-                    ocr_status = f'OCR unavailable: {exc}'
+                    prefix = 'OCR partially available' if panel_reading.value is not None or tape_readings else 'OCR unavailable'
+                    ocr_status = f'{prefix}: {exc}'
             full_screen_readings = parse_instruments(text)
             instruments = reconcile_instruments(full_screen_readings,tape_readings)
+            # Full-screen OCR can include the left panel; it is not a third,
+            # independent altitude source. Compare the two spatial crops only.
+            cockpit_altitude = tape_readings.get('altitude',InstrumentCandidate(None,None,'Cockpit altitude unavailable'))
+            altitude_check = assess_altitude(cockpit_altitude,panel_reading)
+            instruments['altitude'] = altitude_check.selected
             self.completed.emit({
                 'image': image, 'reading': reading,
                 'report': {'captured_utc': datetime.now(timezone.utc).isoformat(),
@@ -83,6 +104,8 @@ class HudWorker(QThread):
                            'size': list(image.size), 'desktop_bounds': bounds,
                            'geometry': asdict(reading), 'ocr_status': ocr_status, 'raw_ocr': text,
                            'region_ocr': region_ocr,
+                           'side_panel_ocr': panel_ocr,
+                           'altitude_check': asdict(altitude_check),
                            'full_screen_instruments': {k: asdict(v) for k,v in full_screen_readings.items()},
                            'tape_instruments': {k: asdict(v) for k,v in tape_readings.items()},
                            'instruments': {k: asdict(v) for k,v in instruments.items()},
@@ -254,8 +277,21 @@ class AircraftHudDialog(QDialog):
                           else f"{name.title()}: unavailable — {candidate['reason']}")
         geometry = (f'Horizon candidate at Y={reading.horizon_y:.1f}px; slope={reading.horizon_slope:.3f}. '
                     if reading.horizon_y is not None else 'Horizon unavailable. ')
+        altitude = report.get('altitude_check')
+        altitude_line = ''
+        if altitude:
+            def source_value(candidate):
+                return f"{candidate['value']:g} {candidate['unit']}" if candidate['value'] is not None else 'unavailable'
+            delta = f"{altitude['difference_ft']:g} ft" if altitude['difference_ft'] is not None else 'not compared'
+            state = {'agree':'agree', 'disagree':'DISAGREEMENT — altitude rejected',
+                     'cockpit_only':'cockpit only (not cross-checked)',
+                     'side_panel_fallback':'left-panel fallback (not cross-checked)',
+                     'unavailable':'unavailable'}[altitude['status']]
+            altitude_line = (f"\nAltitude sources: cockpit {source_value(altitude['cockpit'])}; "
+                             f"left panel {source_value(altitude['side_panel'])}; difference {delta}; "
+                             f"tolerance {altitude['tolerance_ft']:g} ft; {state}.")
         self.status.setText(geometry + f'Pixel support: {reading.horizon_confidence:.0%} (not accuracy). '
-                            + reading.reason + '\n' + ' | '.join(values) + '\nPitch / roll: uncalibrated; no controls enabled.')
+                            + reading.reason + '\n' + ' | '.join(values) + altitude_line + '\nPitch / roll: uncalibrated; no controls enabled.')
         lines = [f"Source: {report['source']} | Resolution: {report['size']} | {report['captured_utc']}",
                  'Cyan: candidate line. Orange: tape-derived readout regions. Tape-profile units assumed: feet / knots.',
                  report['ocr_status']]
@@ -264,6 +300,10 @@ class AircraftHudDialog(QDialog):
                 lines.append(f"{name.title()} cropped candidate: {candidate['value']:g} {candidate['unit']} — {candidate['reason']}")
         for name,region in report.get('region_ocr',{}).items():
             lines.append(f"{name.title()} crop — label OCR: {region['label_text']} | digit OCR: {region['digit_text']}")
+        if report.get('side_panel_ocr'):
+            panel = report['side_panel_ocr']
+            lines.append(f"Left-panel OCR: {panel['text'] or '(none)'}")
+            if panel.get('error'): lines.append(f"Left-panel error: {panel['error']}")
         lines.extend(['Raw full-screen OCR (inspect against screenshot):',report['raw_ocr'] or '(none)'])
         self.details.setPlainText('\n'.join(lines))
 
@@ -293,6 +333,11 @@ class AircraftHudDialog(QDialog):
                     buffer = io.BytesIO()
                     image.save(buffer,format='PNG')
                     archive.writestr(name,buffer.getvalue())
+                panel = self._payload['report'].get('side_panel_ocr')
+                if panel and panel['box'] and panel['text']:
+                    buffer = io.BytesIO()
+                    self._payload['image'].crop(panel['box']).save(buffer,format='PNG')
+                    archive.writestr('side-panel-altitude.png',buffer.getvalue())
                 for name,region in self._payload['report'].get('region_ocr',{}).items():
                     if name in ('altitude','airspeed'):
                         buffer = io.BytesIO()
