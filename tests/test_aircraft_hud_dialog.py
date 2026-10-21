@@ -6,12 +6,13 @@ from pathlib import Path
 import tempfile
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch, Mock
 import zipfile
 from PIL import Image
 from PyQt5.QtWidgets import QApplication, QWidget
 from PyQt5.QtTest import QTest
-from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtCore import Qt, QTimer, QSize
+from PyQt5.QtGui import QResizeEvent
 from AeroHelper.ui.aircraft_hud_dialog import AircraftHudDialog, HudWorker
 
 
@@ -31,6 +32,40 @@ class DialogTests(unittest.TestCase):
         while self.dialog.worker is not None and time.monotonic()<deadline:
             QTest.qWait(10)
         self.assertIsNone(self.dialog.worker,'worker did not finish')
+
+    def test_resize_during_construction_before_preview_exists(self):
+        class EarlyResizeDialog(AircraftHudDialog):
+            def resize(self, width, height):
+                super().resize(width, height)
+                # Native Windows may deliver this synchronously during setup.
+                self.resizeEvent(QResizeEvent(QSize(width,height),QSize()))
+        dialog=EarlyResizeDialog(self.parent)
+        self.addCleanup(dialog.close)
+        dialog.show()
+        self.app.processEvents()
+        self.assertTrue(dialog.isVisible())
+
+    def test_menu_constructor_failure_keeps_main_window_and_logs_error(self):
+        from AeroHelper.ui.main_window import MainWindow
+        self.parent.is_running=False
+        self.parent._show_message_dialog=Mock()
+        with tempfile.TemporaryDirectory() as tmp:
+            log=Path(tmp)/'AeroHelper.log'
+            with patch('AeroHelper.ui.aircraft_hud_dialog.AircraftHudDialog',side_effect=RuntimeError('startup test failure')), \
+                 patch('AeroHelper.ui.main_window.default_log_path',return_value=log):
+                MainWindow._open_aircraft_hud_test(self.parent)
+            self.assertIn('startup test failure',log.read_text())
+        self.assertTrue(self.parent.isVisible())
+        self.parent._show_message_dialog.assert_called_once()
+        self.assertIn('still running',self.parent._show_message_dialog.call_args.args[-1])
+
+    def test_display_failure_is_reported_without_escaping_qt_callback(self):
+        payload={'image':Image.new('RGB',(640,480),'navy'),'reading':None,'report':{}}
+        with patch('AeroHelper.ui.aircraft_hud_dialog.annotated_image',side_effect=RuntimeError('preview test failure')):
+            self.dialog.show_result(payload)
+        self.assertTrue(self.dialog.isVisible())
+        self.assertIsNone(self.dialog._payload)
+        self.assertIn('preview test failure',self.dialog.status.text())
 
     def test_main_window_opens_persistent_modal_without_exec_loop(self):
         from AeroHelper.ui.main_window import MainWindow

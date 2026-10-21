@@ -163,6 +163,11 @@ def _fetch_startup_data(main_window, webhook_url, app_version):
 def main():
     QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
     app = QApplication(sys.argv)
+    if '--hud-smoke-test' in sys.argv:
+        from AeroHelper.ui.hud_smoke import run_hud_smoke
+        index = sys.argv.index('--hud-smoke-test')
+        report_path = sys.argv[index + 1] if index + 1 < len(sys.argv) else 'hud-smoke.json'
+        sys.exit(run_hud_smoke(app, report_path))
     app_icon = load_app_icon()
     if not app_icon.isNull():
         app.setWindowIcon(app_icon)

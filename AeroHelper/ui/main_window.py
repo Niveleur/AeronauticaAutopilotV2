@@ -265,17 +265,34 @@ class MainWindow(QMainWindow):
             self._show_message_dialog(QMessageBox.Warning, 'Stop automation first',
                                       'Stop the current automation before opening the read-only Aircraft HUD Test.')
             return
-        from AeroHelper.ui.aircraft_hud_dialog import AircraftHudDialog
-        dialog = getattr(self, '_aircraft_hud_dialog', None)
-        if dialog is None:
-            dialog = AircraftHudDialog(self)
-            self._aircraft_hud_dialog = dialog
-        # hide() ends QDialog.exec_(). Keep a persistent modal window instead
-        # so the capture countdown can hide it without ending its lifetime.
-        dialog.setWindowModality(Qt.ApplicationModal)
-        dialog.show()
-        dialog.raise_()
-        dialog.activateWindow()
+        try:
+            from AeroHelper.ui.aircraft_hud_dialog import AircraftHudDialog
+            dialog = getattr(self, '_aircraft_hud_dialog', None)
+            if dialog is None:
+                dialog = AircraftHudDialog(self)
+                self._aircraft_hud_dialog = dialog
+            # hide() ends QDialog.exec_(). Keep a persistent modal window instead
+            # so the capture countdown can hide it without ending its lifetime.
+            dialog.setWindowModality(Qt.ApplicationModal)
+            dialog.show()
+            dialog.raise_()
+            dialog.activateWindow()
+        except Exception as exc:
+            # A windowed EXE has no console; keep the main window and show the
+            # failure instead of letting an unhandled Qt callback end the app.
+            import traceback
+            details = traceback.format_exc()
+            log_note = ''
+            try:
+                log_path = default_log_path()
+                with log_path.open('a', encoding='utf-8') as log:
+                    log.write('\n[Aircraft HUD Test startup error]\n' + details)
+                log_note = f'\nDetails were saved to {log_path}.'
+            except OSError:
+                pass
+            self.show()
+            self._show_message_dialog(QMessageBox.Critical, 'Aircraft HUD Test could not open',
+                                      f'{exc}\nAeroHelper is still running.{log_note}')
 
     def _webhook_display_text(self):
         val = self._webhook_value.strip()

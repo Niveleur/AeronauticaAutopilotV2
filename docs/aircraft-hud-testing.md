@@ -59,3 +59,8 @@ The suite includes synthetic geometry/label parsing, mocked Windows capture,
 worker error handling, offscreen Qt rendering/restoration and diagnostic export.
 Synthetic/mocked checks do not establish real-game recognition or Windows EXE
 runtime behavior. GitHub Actions runs this suite before packaging the EXE.
+
+The Windows build also launches the packaged EXE with an internal CI smoke-test
+flag. It opens the actual HUD menu callback, resizes the native dialog, processes
+a synthetic frame and verifies preview rendering. A missing/failed report blocks
+artifact upload. This check does not capture the desktop or contact Roblox.

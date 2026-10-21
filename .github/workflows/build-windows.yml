@@ -39,6 +39,22 @@ jobs:
         shell: pwsh
         run: |
           if (!(Test-Path 'dist/AeronauticaAutopilotV2/AeronauticaAutopilotV2.exe')) { throw 'EXE not found' }
+      - name: Smoke test packaged Windows HUD window
+        shell: pwsh
+        run: |
+          $report = Join-Path $env:RUNNER_TEMP 'hud-smoke.json'
+          $exe = (Resolve-Path 'dist/AeronauticaAutopilotV2/AeronauticaAutopilotV2.exe').Path
+          $process = Start-Process -FilePath $exe -ArgumentList @('--hud-smoke-test', "`"$report`"") -PassThru
+          if (!$process.WaitForExit(120000)) {
+            Stop-Process -Id $process.Id -Force
+            throw 'Packaged HUD smoke test timed out'
+          }
+          if (!(Test-Path $report)) { throw 'Packaged HUD smoke report missing' }
+          $result = Get-Content $report -Raw | ConvertFrom-Json
+          Get-Content $report
+          if ($process.ExitCode -ne 0 -or !$result.ok -or !$result.frozen) {
+            throw 'Packaged Windows HUD smoke test failed'
+          }
       - name: Upload Windows package
         uses: actions/upload-artifact@v4
         with:

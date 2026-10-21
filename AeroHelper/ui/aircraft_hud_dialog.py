@@ -77,13 +77,15 @@ def annotated_image(image, reading):
 class AircraftHudDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle('Aircraft HUD Test — read-only')
-        self.resize(960,760)
+        # Native window events may arrive during resize/show on Windows.
+        # Initialize every event-handler field before touching window geometry.
+        self._preview_image = None
         self.worker = None
         self._hidden_windows = []
         self._busy = False
         self._payload = None
-        self._preview_image = None
+        self.setWindowTitle('Aircraft HUD Test — read-only')
+        self.resize(960,760)
         layout = QVBoxLayout(self)
         instructions = QLabel('Enter cockpit view first. Capture hides AeroHelper for 3 seconds; switch to Roblox if needed. '
                               'Only the foreground Roblox client is captured, including on another monitor. '
@@ -186,6 +188,12 @@ class AircraftHudDialog(QDialog):
         self.status.setText(f'Capture / analysis failed: {message}')
 
     def show_result(self, payload):
+        try:
+            self._display_result(payload)
+        except Exception as exc:
+            self.show_failure(f'Could not display HUD diagnostics: {exc}')
+
+    def _display_result(self, payload):
         self._restore_windows()
         self._payload = payload
         reading,report = payload['reading'],payload['report']
@@ -205,7 +213,7 @@ class AircraftHudDialog(QDialog):
                                   f"{report['ocr_status']}\nRaw OCR (inspect against screenshot):\n{report['raw_ocr'] or '(none)'}")
 
     def _render_preview(self):
-        if self._preview_image is None:
+        if getattr(self, '_preview_image', None) is None or not hasattr(self, 'preview'):
             return
         image = self._preview_image
         data = image.tobytes('raw','RGB')
