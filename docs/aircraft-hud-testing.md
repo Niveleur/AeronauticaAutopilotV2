@@ -24,7 +24,12 @@ Upstream AeroHelper's MIT license and attribution remain in place.
    the raw text against the image. Full-screen labelled readings still require
    explicit units (before or after the value). For the paired-tape HUD profile,
    separate label and digit crops are read without the waypoint fallback. Each
-   crop requires a recognised instrument label and consistent numeric output.
+   crop requires consistent numeric output and a recognised instrument label.
+   If a scrolling tape tick obscures that label, an expanded full-screen label
+   (ALTITUDE or AIRSPEED/IAS) must independently report the exact same value.
+   Dedicated label crops exclude the readout digits and most tape ticks. A
+   wider label/readout crop is retried when the tight crop clips a glyph; both
+   attempts and their bounding boxes are retained in the diagnostic report.
    Feet/knots are **assumed from that experimental profile**, not recognised units.
    Missing labels, mixed text or disagreements between sources remain unavailable.
    Full-screen tape ticks and chat numbers never substitute for a readout.
@@ -84,3 +89,8 @@ Geometry is checked at multiple scales and a reconstructed ultrawide viewport.
 CPU EasyOCR was also run on the uploaded original using the actual region OCR
 pipeline; both numeric readouts matched the visible image. This one capture does
 not validate other aircraft, changing instruments, bank angles or flight control.
+
+A second central-HUD fixture covers a night capture at 29,659 ft / 88 knots.
+Its original combined label/readout crop lost ALT to overlapping tape ticks.
+The separate label crop and exact-value corroboration path are regression-tested;
+missing, truncated or conflicting corroborating values are rejected.

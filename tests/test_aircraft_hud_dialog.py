@@ -165,6 +165,47 @@ class DialogTests(unittest.TestCase):
                 exported=json.loads(archive.read('report.json'))
                 self.assertEqual(exported['region_ocr']['airspeed']['digit_text'],'089')
 
+    def test_wide_label_retry_preserves_day_capture_when_tight_label_is_clipped(self):
+        fixture=Path(__file__).parent/'fixtures'/'aircraft-tapes-29841ft-89kt.png'
+        with Image.open(fixture) as image: worker=HudWorker(image.copy(),use_ocr=True)
+        results=[]
+        worker.completed.connect(results.append)
+        engine=Mock()
+        engine.extract_text.return_value=''
+        def region_text(path):
+            return {'altitude-label.png':'ILT','altitude-label-wide.png':'ALT 00 29841',
+                    'altitude-digits.png':'29841','airspeed-label.png':'SPEED',
+                    'airspeed-digits.png':'089'}[Path(path).name]
+        engine.extract_region_text.side_effect=region_text
+        with patch('AeroHelper.ocr.normal_ocr.NormalOCR',return_value=engine):worker.run()
+        self.assertEqual(len(results),1)
+        report=results[0]['report']
+        self.assertEqual(report['instruments']['altitude']['value'],29841)
+        self.assertEqual(len(report['region_ocr']['altitude']['label_attempts']),2)
+        self.assertEqual(report['ocr_status'],'OCR completed')
+        self.assertFalse(report['controls_enabled'])
+
+    def test_night_worker_confirms_an_occluded_alt_label_without_guessing(self):
+        fixture=Path(__file__).parent/'fixtures'/'aircraft-tapes-night-29659ft-88kt.png'
+        with Image.open(fixture) as image:
+            worker=HudWorker(image.copy(),use_ocr=True)
+        results=[]
+        worker.completed.connect(results.append)
+        engine=Mock()
+        engine.extract_text.return_value='AIRSPEED 88 Knots ALTITUDE 29659 VERTICAL SPEED 0.1 ft/s'
+        def region_text(path):
+            return {'altitude-label.png':'AT','altitude-digits.png':'29659',
+                    'airspeed-label.png':'SPEED','airspeed-digits.png':'088',
+                    'altitude-label-wide.png':'29659'}[Path(path).name]
+        engine.extract_region_text.side_effect=region_text
+        with patch('AeroHelper.ocr.normal_ocr.NormalOCR',return_value=engine):worker.run()
+        self.assertEqual(len(results),1)
+        report=results[0]['report']
+        self.assertEqual(report['instruments']['altitude']['value'],29659)
+        self.assertEqual(report['instruments']['airspeed']['value'],88)
+        self.assertIn('confirmed',report['tape_instruments']['altitude']['reason'])
+        self.assertFalse(report['controls_enabled'])
+
     def test_import_and_worker_ocr_failures_are_diagnostic(self):
         with tempfile.TemporaryDirectory() as tmp:
             filename=str(Path(tmp)/'cockpit.png')

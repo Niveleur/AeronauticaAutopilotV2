@@ -175,18 +175,36 @@ def tape_digit_boxes(reading):
             for name,box in [('altitude',reading.altitude_box),('airspeed',reading.speed_box)]}
 
 
-def parse_tape_readout(name, label_text, digit_text):
+def tape_label_boxes(reading):
+    """Keep the label separate from scrolling tape numbers and readout digits."""
+    if not reading.tape_rails:
+        return {}
+    _,_,top,bottom = reading.tape_rails
+    span = bottom-top
+    middle = (top+bottom)/2
+    boxes = {name: (box[0],round(middle-.127*span),box[2],round(middle-.058*span))
+             for name,box in tape_digit_boxes(reading).items()}
+    # SPEED is right-aligned above its readout and wider than its three digits.
+    speed = boxes['airspeed']
+    boxes['airspeed'] = (reading.speed_box[0],speed[1],reading.speed_box[2],speed[3])
+    return boxes
+
+
+def tape_label_recognized(name, text):
+    labels = {'altitude': r'\bALT(?:ITUDE)?\b', 'airspeed': r'\b(?:SPEED|IAS|AIRSPEED)\b'}
+    if name not in labels:
+        raise ValueError('Unknown tape instrument')
+    return 'VERTICAL' not in text.upper() and bool(re.search(labels[name],text,re.IGNORECASE))
+
+
+def parse_tape_readout(name, label_text, digit_text, full_text=''):
     """Require a recognised instrument label and an isolated numeric readout.
 
     Units come from the experimental Aeronautica tape profile, not from OCR.
     Missing labels, mixed text and disagreements between OCR engines fail closed.
     """
-    labels = {'altitude': r'\bALT(?:ITUDE)?\b', 'airspeed': r'\b(?:SPEED|IAS|AIRSPEED)\b'}
     units = {'altitude': 'FT', 'airspeed': 'KTS'}
-    if name not in labels:
-        raise ValueError('Unknown tape instrument')
-    if 'VERTICAL' in label_text.upper() or not re.search(labels[name],label_text,re.IGNORECASE):
-        return InstrumentCandidate(None,None,'Tape label not recognised')
+    local_label = tape_label_recognized(name,label_text)
     if not digit_text.strip() or not re.fullmatch(r'[\d.,\s]+',digit_text):
         return InstrumentCandidate(None,None,'Readout is not isolated numeric text')
     try:
@@ -198,8 +216,19 @@ def parse_tape_readout(name, label_text, digit_text):
     value = values.pop()
     if not 0 <= value <= (100000 if name == 'altitude' else 2000):
         return InstrumentCandidate(None,None,'Outside diagnostic range')
-    return InstrumentCandidate(value,units[name],
-                               'Single-frame tape OCR; units assumed from Aeronautica HUD profile')
+    if not local_label:
+        # A scrolling tick can overwrite ALT. Require an independent expanded
+        # label with the exact same value; never guess the label from digits.
+        expanded = r'ALTITUDE' if name == 'altitude' else r'(?:AIRSPEED|IAS)'
+        pattern = rf'\b{expanded}\s*[:=]?\s*(?:(?:FT|FEET|KTS?|KNOTS?)\s+)?(\d+(?:,\d{{3}})*(?:\.\d+)?)\b'
+        corroborating = {float(m.group(1).replace(',',''))
+                         for m in re.finditer(pattern,full_text,re.IGNORECASE)}
+        if corroborating != {value}:
+            return InstrumentCandidate(None,None,'Tape label not recognised or independently confirmed')
+        reason = 'Tape digits confirmed by full-screen instrument label; units assumed from Aeronautica HUD profile'
+    else:
+        reason = 'Single-frame tape OCR; units assumed from Aeronautica HUD profile'
+    return InstrumentCandidate(value,units[name],reason)
 
 
 def reconcile_instruments(full_screen, tape_readings):

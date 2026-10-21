@@ -12,7 +12,7 @@ from PyQt5.QtGui import QImage, QPixmap
 from PyQt5.QtWidgets import (QApplication, QCheckBox, QDialog, QFileDialog,
                             QHBoxLayout, QLabel, QPushButton, QTextEdit, QVBoxLayout)
 from AeroHelper.automation.aircraft_hud import (analyze_cockpit, parse_instruments,
-                                                tape_digit_boxes, parse_tape_readout,
+                                                tape_digit_boxes, tape_label_boxes, tape_label_recognized, parse_tape_readout,
                                                 reconcile_instruments)
 from AeroHelper.utils.aircraft_capture import capture_roblox_client
 from AeroHelper.utils.window import bring_roblox_to_front
@@ -44,22 +44,34 @@ class HudWorker(QThread):
                         filename = str(Path(tmp) / 'cockpit.png')
                         image.save(filename)
                         text = engine.extract_text(filename)
-                        label_boxes = {'altitude': reading.altitude_box, 'airspeed': reading.speed_box}
+                        label_boxes = tape_label_boxes(reading)
                         for name,box in tape_digit_boxes(reading).items():
                             labels = image.crop(label_boxes[name])
-                            labels = labels.resize((labels.width*2,labels.height*2),Image.Resampling.LANCZOS)
+                            labels = labels.resize((labels.width*3,labels.height*3),Image.Resampling.LANCZOS)
                             label_path = str(Path(tmp) / f'{name}-label.png')
                             labels.save(label_path)
                             label_text = engine.extract_region_text(label_path)
+                            label_attempts = [{'box': label_boxes[name], 'text': label_text}]
+                            if not tape_label_recognized(name,label_text):
+                                wide_box = reading.altitude_box if name == 'altitude' else reading.speed_box
+                                wide = image.crop(wide_box)
+                                wide = wide.resize((wide.width*2,wide.height*2),Image.Resampling.LANCZOS)
+                                wide_path = str(Path(tmp) / f'{name}-label-wide.png')
+                                wide.save(wide_path)
+                                wide_text = engine.extract_region_text(wide_path)
+                                label_attempts.append({'box': wide_box, 'text': wide_text})
+                                label_text = f'{label_text} | {wide_text}'
                             digits = image.crop(box)
                             digits = digits.resize((digits.width*3,digits.height*3),Image.Resampling.LANCZOS)
                             digit_path = str(Path(tmp) / f'{name}-digits.png')
                             digits.save(digit_path)
                             digit_text = engine.extract_region_text(digit_path)
                             region_ocr[name] = {'label_text': label_text, 'digit_text': digit_text,
-                                                'label_box': label_boxes[name], 'digit_box': box}
-                            tape_readings[name] = parse_tape_readout(name,label_text,digit_text)
-                    ocr_status = 'OCR completed' if text.strip() else 'No OCR text returned; engine or model may be unavailable'
+                                                'label_box': label_boxes[name], 'digit_box': box,
+                                                'label_attempts': label_attempts}
+                            tape_readings[name] = parse_tape_readout(name,label_text,digit_text,full_text=text)
+                    has_text = text.strip() or any(region['digit_text'].strip() for region in region_ocr.values())
+                    ocr_status = 'OCR completed' if has_text else 'No OCR text returned; engine or model may be unavailable'
                 except Exception as exc:
                     ocr_status = f'OCR unavailable: {exc}'
             full_screen_readings = parse_instruments(text)

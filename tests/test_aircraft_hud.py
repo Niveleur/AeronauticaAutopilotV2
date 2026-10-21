@@ -120,6 +120,22 @@ class ActualCaptureTests(unittest.TestCase):
         self.assertIsNone(result['airspeed'].value)
         self.assertIn('disagree',result['airspeed'].reason)
 
+    def test_occluded_label_requires_independent_exact_value_confirmation(self):
+        reading=parse_tape_readout('altitude','AT','29659',full_text='ALTITUDE 29659 VERTICAL SPEED 0.1 ft/s')
+        self.assertEqual(reading.value,29659)
+        self.assertIn('confirmed',reading.reason)
+        for full in ('','29659','ALT 29659','ALTITUDE 2965','ALTITUDE 29659 ALTITUDE 29658'):
+            self.assertIsNone(parse_tape_readout('altitude','AT','29659',full_text=full).value)
+
+    def test_night_hud_keeps_geometry_and_readout_regions(self):
+        fixture=self.fixture.with_name('aircraft-tapes-night-29659ft-88kt.png')
+        with Image.open(fixture) as image:
+            reading=analyze_cockpit(image)
+        self.assertIsNotNone(reading.tape_rails)
+        self.assertAlmostEqual(reading.horizon_y,536,delta=5)
+        self.assertAlmostEqual(reading.horizon_slope,0.,delta=.02)
+        self.assertTrue(reading.altitude_box[0] < 1220 < reading.altitude_box[2])
+
     def test_unit_aliases_do_not_create_false_source_disagreements(self):
         full=parse_instruments('AIRSPEED 89 Knots IAS 89 KTS ALT 29841 FEET')
         tape={'airspeed':parse_tape_readout('airspeed','SPEED','089'),
