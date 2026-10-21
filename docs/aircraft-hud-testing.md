@@ -63,4 +63,8 @@ runtime behavior. GitHub Actions runs this suite before packaging the EXE.
 The Windows build also launches the packaged EXE with an internal CI smoke-test
 flag. It opens the actual HUD menu callback, resizes the native dialog, processes
 a synthetic frame and verifies preview rendering. A missing/failed report blocks
-artifact upload. This check does not capture the desktop or contact Roblox.
+artifact upload. Upload explicitly includes hidden dependency folders (NumPy's
+OpenBLAS DLL lives in `numpy/.libs`). CI then downloads that artifact into a
+separate directory and repeats the dependency and EXE checks with toolchain
+folders removed from PATH. Only a green workflow confirms the downloadable
+package passed. These checks do not capture the desktop or contact Roblox.
