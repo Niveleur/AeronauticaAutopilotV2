@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 import tempfile
 import zipfile
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageOps
 from PyQt5.QtCore import Qt, QThread, QTimer, pyqtSignal, QByteArray, QBuffer, QIODevice, QEvent
 from PyQt5.QtGui import QImage, QPixmap
 from PyQt5.QtWidgets import (QApplication, QCheckBox, QDialog, QFileDialog,
@@ -99,7 +99,22 @@ class HudWorker(QThread):
                             digit_path = str(Path(tmp) / f'{name}-digits.png')
                             digits.save(digit_path)
                             digit_text = engine.extract_region_text(digit_path)
+                            digit_attempts = [{'preprocessing': 'original', 'text': digit_text}]
+                            # Retry only a missing speed readout. Do not replace conflicting
+                            # or invalid text with a more convenient second result.
+                            if name == 'airspeed' and not digit_text.strip():
+                                contrast = ImageOps.grayscale(image.crop(box)).point(
+                                    lambda value: 0 if value >= 200 else 255)
+                                contrast = contrast.resize((contrast.width*3,contrast.height*3),
+                                                           Image.Resampling.NEAREST)
+                                contrast = ImageOps.expand(contrast,border=24,fill=255)
+                                contrast_path = str(Path(tmp) / 'airspeed-digits-contrast.png')
+                                contrast.save(contrast_path)
+                                digit_text = engine.extract_region_text(contrast_path)
+                                digit_attempts.append({'preprocessing': 'high_contrast_padded',
+                                                       'text': digit_text})
                             region_ocr[name] = {'label_text': label_text, 'digit_text': digit_text,
+                                                'digit_attempts': digit_attempts,
                                                 'label_box': label_boxes[name], 'digit_box': box,
                                                 'label_attempts': label_attempts}
                             tape_readings[name] = parse_tape_readout(name,label_text,digit_text,full_text=text)
@@ -325,6 +340,8 @@ class AircraftHudDialog(QDialog):
                 lines.append(f"{name.title()} cropped candidate: {candidate['value']:g} {candidate['unit']} — {candidate['reason']}")
         for name,region in report.get('region_ocr',{}).items():
             lines.append(f"{name.title()} crop — label OCR: {region['label_text']} | digit OCR: {region['digit_text']}")
+            for attempt in region.get('digit_attempts',[]):
+                lines.append(f"  Digits ({attempt['preprocessing']}): {attempt['text'] or '[no text]'}")
         if report.get('side_panel_ocr'):
             panel = report['side_panel_ocr']
             lines.append(f"Left-panel OCR: {panel['text'] or '(none)'}")

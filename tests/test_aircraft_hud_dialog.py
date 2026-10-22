@@ -150,6 +150,36 @@ class DialogTests(unittest.TestCase):
         self.assertFalse(self.dialog.save_button.isEnabled())
         self.assertIn('not foreground',self.dialog.status.text())
 
+    def test_missing_airspeed_retries_contrast_without_overwriting_conflicts(self):
+        fixture=Path(__file__).parent/'fixtures'/'aircraft-tapes-clouds-30583ft-156kt.png'
+        for original,expected,retry in [('',156,True),('156 158',None,False),('156',156,False)]:
+            with self.subTest(original=original), Image.open(fixture) as image:
+                worker=HudWorker(image.copy(),use_ocr=True)
+                results=[]
+                worker.completed.connect(results.append)
+                engine=Mock()
+                engine.extract_text.return_value=''
+                def region_text(path):
+                    name=Path(path).name
+                    if name=='airspeed-digits.png': return original
+                    if name=='airspeed-digits-contrast.png':
+                        with Image.open(path) as prepared:
+                            self.assertEqual(prepared.getpixel((0,0)),255)
+                            self.assertEqual(set(prepared.getdata()),{0,255})
+                        return '156 156'
+                    return {'altitude-label.png':'ALT','altitude-digits.png':'30583',
+                            'airspeed-label.png':'SPEED'}.get(name,'')
+                engine.extract_region_text.side_effect=region_text
+                with patch('AeroHelper.ocr.normal_ocr.NormalOCR',return_value=engine):
+                    worker.run()
+                self.assertEqual(len(results),1)
+                report=results[0]['report']
+                self.assertEqual(report['instruments']['airspeed']['value'],expected)
+                attempts=report['region_ocr']['airspeed']['digit_attempts']
+                self.assertEqual(len(attempts),2 if retry else 1)
+                self.assertEqual(attempts[0]['text'],original)
+                self.assertFalse(report['controls_enabled'])
+
     def test_real_hud_worker_uses_isolated_crops_and_exports_them(self):
         fixture=Path(__file__).parent/'fixtures'/'aircraft-tapes-29841ft-89kt.png'
         with Image.open(fixture) as image:
