@@ -119,6 +119,27 @@ class ActualCaptureTests(unittest.TestCase):
                     self.assertAlmostEqual(reading.horizon_y,601*scale,delta=6)
                     self.assertAlmostEqual(reading.horizon_slope,0.,delta=.02)
 
+    def test_previous_positions_require_current_paired_rails_and_caps(self):
+        with Image.open(self.fixture) as source:
+            image=source.convert('RGB')
+        previous=analyze_cockpit(image)
+        damaged=image.copy()
+        draw=ImageDraw.Draw(damaged)
+        left,right,top,bottom=previous.tape_rails
+        # Fragment rails into short segments while retaining most of each line.
+        for x in (left,right):
+            for y in range(top+30,bottom-30,45):
+                draw.rectangle((x-2,y,x+2,y+12),fill=(40,60,80))
+        self.assertIsNone(analyze_cockpit(damaged).tape_rails)
+        tracked=analyze_cockpit(damaged,previous)
+        self.assertEqual(tracked.tape_rails,previous.tape_rails)
+        self.assertEqual(tracked.layout_source,'current_frame_validated_previous_positions')
+        for colour in ('black','white'):
+            blank=Image.new('RGB',image.size,colour)
+            self.assertIsNone(analyze_cockpit(blank,previous).tape_rails)
+        draw.rectangle((right-4,top-20,right+4,bottom+20),fill='black')
+        self.assertIsNone(analyze_cockpit(damaged,previous).tape_rails)
+
     def test_ultrawide_capture_uses_hud_rails_not_screen_edge_fractions(self):
         with Image.open(self.fixture) as crop:
             image=Image.new('RGB',(3440,1440),(80,90,110))

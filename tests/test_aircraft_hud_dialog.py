@@ -177,7 +177,7 @@ class DialogTests(unittest.TestCase):
 
     def test_missing_airspeed_retries_contrast_without_overwriting_conflicts(self):
         fixture=Path(__file__).parent/'fixtures'/'aircraft-tapes-clouds-30583ft-156kt.png'
-        for original,expected,retry in [('',156,True),('156 158',None,False),('156',156,False)]:
+        for original,expected,retry in [('',156,True),('l56',156,True),('156 158',None,False),('156',156,False)]:
             with self.subTest(original=original), Image.open(fixture) as image:
                 worker=HudWorker(image.copy(),use_ocr=True)
                 results=[]
@@ -204,6 +204,24 @@ class DialogTests(unittest.TestCase):
                 self.assertEqual(len(attempts),2 if retry else 1)
                 self.assertEqual(attempts[0]['text'],original)
                 self.assertFalse(report['controls_enabled'])
+
+    def test_malformed_altitude_crop_uses_contrast_retry(self):
+        fixture=Path(__file__).parent/'fixtures'/'aircraft-tapes-29841ft-89kt.png'
+        with Image.open(fixture) as image:
+            worker=HudWorker(image.copy(),use_ocr=True)
+        results=[];worker.completed.connect(results.append)
+        engine=Mock();engine.extract_text.return_value=''
+        def region_text(path):
+            return {'side-panel-altitude.png':'ALTITUDE 29841 ft',
+                    'altitude-label.png':'ALT','altitude-digits.png':'29B41',
+                    'altitude-digits-contrast.png':'29841',
+                    'airspeed-label.png':'SPEED','airspeed-digits.png':'089'}[Path(path).name]
+        engine.extract_region_text.side_effect=region_text
+        with patch('AeroHelper.ocr.normal_ocr.NormalOCR',return_value=engine):worker.run()
+        report=results[0]['report']
+        self.assertEqual(report['altitude_check']['status'],'agree')
+        self.assertEqual(len(report['region_ocr']['altitude']['digit_attempts']),2)
+        self.assertEqual(report['region_ocr']['altitude']['digit_attempts'][0]['text'],'29B41')
 
     def test_real_hud_worker_uses_isolated_crops_and_exports_them(self):
         fixture=Path(__file__).parent/'fixtures'/'aircraft-tapes-29841ft-89kt.png'

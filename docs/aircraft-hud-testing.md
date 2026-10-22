@@ -162,3 +162,31 @@ do not claim a detected boundary, valid pitch, valid roll or aircraft control.
 Review the collected ADI crops against cloud, ocean, terrain and snow before
 calibrating any attitude estimator. The main HUD horizon also remains unverified
 in snowy areas and may be off-screen during steep dives.
+
+## Tracking, continuity and smaller exports
+
+Recording can reuse the previous frame's tape positions for at most a 5-second
+capture gap, with unchanged resolution. Reuse requires both rails to retain at
+least 45% thin-line support and their top/bottom end caps to retain at least 65%
+horizontal support **in the current frame**. Foreground capture failure clears
+the hint. Missing geometry or failed validation does not carry forward readings.
+`geometry.layout_source` distinguishes fresh detection from validated reuse.
+
+Empty or non-numeric altitude and speed OCR crops get the padded contrast retry.
+Numeric disagreements are not overwritten by a more convenient retry. Original
+and retry strings are preserved. The existing 5-ft altitude comparison remains.
+
+`continuity` flags are diagnostic, with raw readings preserved: missing,
+delayed (processing over 5 seconds), reacquired after a gap over 10 seconds, or
+suspicious jump. Broad review thresholds are 500 ft/s plus 10 ft of slack and
+100 knots/s plus 5 knots of slack. These are not aircraft performance limits or
+flight-control validation. A suspicious sample does not update the comparison
+baseline. Live recording status shows these flags; summaries count suspicious
+readings and delayed samples.
+
+On completion, the full archive is accompanied by a `-logs.zip` and independent
+`-images-001.zip`, `-images-002.zip`, etc. Image groups target at most 20 MiB of
+source files (before ZIP headers), with logs repeated in every part. Upload the
+small logs ZIP first, then image ZIPs individually. They are ordinary independent
+ZIPs and do not need reassembling. This avoids the 32 MiB transfer limit for
+normal instrument crops. Original source folders and full ZIPs are retained.

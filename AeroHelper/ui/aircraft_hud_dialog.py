@@ -3,6 +3,7 @@ from dataclasses import asdict
 from datetime import datetime, timezone
 import io
 import json
+import re
 from pathlib import Path
 import tempfile
 import zipfile
@@ -26,19 +27,20 @@ class HudWorker(QThread):
     completed = pyqtSignal(object)
     failed = pyqtSignal(str)
 
-    def __init__(self, image=None, use_ocr=False, parent=None, engine=None, full_screen_ocr=True):
+    def __init__(self, image=None, use_ocr=False, parent=None, engine=None, full_screen_ocr=True, previous_reading=None):
         super().__init__(parent)
         self.image = image
         self.use_ocr = use_ocr
         self.engine = engine
         self.full_screen_ocr = full_screen_ocr
+        self.previous_reading = previous_reading
 
     def run(self):
         try:
             image, bounds = (self.image.copy(), None) if self.image is not None else capture_roblox_client()
             captured_utc = datetime.now(timezone.utc).isoformat()
             self.captured.emit(image)
-            reading = analyze_cockpit(image)
+            reading = analyze_cockpit(image,self.previous_reading)
             text, ocr_status = '', 'OCR not requested'
             region_ocr, tape_readings = {}, {}
             panel_reading = InstrumentCandidate(None,None,'Left-panel OCR not requested')
@@ -104,15 +106,16 @@ class HudWorker(QThread):
                             digits.save(digit_path)
                             digit_text = engine.extract_region_text(digit_path)
                             digit_attempts = [{'preprocessing': 'original', 'text': digit_text}]
-                            # Retry only a missing speed readout. Do not replace conflicting
-                            # or invalid text with a more convenient second result.
-                            if name == 'airspeed' and not digit_text.strip():
+                            # Retry missing/non-numeric crops for either instrument.
+                            # Numeric conflicts remain rejected; do not select a
+                            # convenient retry just because the panel disagrees.
+                            if not digit_text.strip() or not re.fullmatch(r'[\d.,\s]+',digit_text):
                                 contrast = ImageOps.grayscale(image.crop(box)).point(
                                     lambda value: 0 if value >= 200 else 255)
                                 contrast = contrast.resize((contrast.width*3,contrast.height*3),
                                                            Image.Resampling.NEAREST)
                                 contrast = ImageOps.expand(contrast,border=24,fill=255)
-                                contrast_path = str(Path(tmp) / 'airspeed-digits-contrast.png')
+                                contrast_path = str(Path(tmp) / f'{name}-digits-contrast.png')
                                 contrast.save(contrast_path)
                                 digit_text = engine.extract_region_text(contrast_path)
                                 digit_attempts.append({'preprocessing': 'high_contrast_padded',
@@ -303,10 +306,16 @@ class AircraftHudDialog(QDialog):
             text += f". Processing delay: {report['reading_age_seconds']:.1f}s ({report['freshness']}). Altitude: {report['altitude_check']['status']}."
         else:
             text += latest.get('reason','Analysis unavailable')
+        if latest['status'] == 'sample':
+            flags = latest['report'].get('continuity',{})
+            text += ' Checks: '+', '.join(f"{name}: {flag['status']}" for name,flag in flags.items())+'.'
         self.status.setText(text+' Restore this window and press Stop to save. No controls enabled.')
 
     def _record_saved(self, result):
         summary = result['summary']
+        if result.get('logs_path'):
+            self.details.append('\nSmall log ZIP: '+result['logs_path'])
+            self.details.append('Image ZIPs (upload separately):\n'+'\n'.join(result.get('image_parts',[])))
         self.status.setText(f"Recording saved: {summary['frames']} frames; "
                             f"{summary['capture_failures']} skipped captures. {summary['stop_reason']}.")
         self.details.append(f"\nSaved ZIP: {result['path']}\n"

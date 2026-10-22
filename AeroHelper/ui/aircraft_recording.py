@@ -39,6 +39,32 @@ def adi_colour_sample(image):
             'reason': 'Unconfirmed standard-layout ADI crop; scenery can affect tint counts.'}
 
 
+def shareable_archives(folder, limit=20*1024*1024):
+    """Independent small ZIPs, each with logs; no multipart reassembly needed."""
+    folder = Path(folder)
+    logs = [folder/'session.json',folder/'samples.jsonl']
+    logs_path = folder.with_name(folder.name+'-logs.zip')
+    with zipfile.ZipFile(logs_path,'w',compression=zipfile.ZIP_DEFLATED) as archive:
+        for path in logs:
+            archive.write(path,path.name)
+    parts,group,size = [],[],sum(p.stat().st_size for p in logs)
+    def write_group(paths):
+        target = folder.with_name(folder.name+f'-images-{len(parts)+1:03d}.zip')
+        with zipfile.ZipFile(target,'w',compression=zipfile.ZIP_DEFLATED) as archive:
+            for path in logs+paths:
+                archive.write(path,path.name)
+        parts.append(str(target))
+    for path in sorted(folder.glob('*.png')):
+        if group and size+path.stat().st_size > limit:
+            write_group(group)
+            group,size = [],sum(p.stat().st_size for p in logs)
+        group.append(path)
+        size += path.stat().st_size
+    if group:
+        write_group(group)
+    return str(logs_path),parts
+
+
 class RecordingWorker(QThread):
     progress = pyqtSignal(object)
     saved = pyqtSignal(object)
@@ -63,13 +89,17 @@ class RecordingWorker(QThread):
                        'maximum_duration_seconds':self.duration,'frames':0,'capture_failures':0,'analysis_failures':0,
                        'altitude_agreements':0,'altitude_disagreements':0,
                        'altitude_unavailable':0,'airspeed_unavailable':0,
-                       'attitude_calibrated':False,'stop_reason':'time limit'}
+                       'attitude_calibrated':False,'stop_reason':'time limit',
+                       'validated_layout_reuses':0,'suspicious_jumps':0,'delayed_samples':0}
             (self.folder/'session.json').write_text(json.dumps(summary,indent=2),encoding='utf-8')
             from AeroHelper.ocr.normal_ocr import NormalOCR
             from AeroHelper.ui.aircraft_hud_dialog import HudWorker
             engine = NormalOCR()  # Reused across frames; model initialization only once.
             started = time.monotonic()
             used_bytes = 0
+            previous_reading,previous_size,previous_at = None,None,None
+            from AeroHelper.automation.reading_history import ReadingHistory
+            history = ReadingHistory()
             with (self.folder/'samples.jsonl').open('a',encoding='utf-8') as log:
                 while time.monotonic()-started < self.duration:
                     if self._stop.is_set():
@@ -81,12 +111,16 @@ class RecordingWorker(QThread):
                         image,bounds = capture_roblox_client()
                     except Exception as exc:
                         summary['capture_failures'] += 1
+                        previous_reading = None
                         record = {'captured_utc':stamp,'status':'capture_skipped','reason':str(exc),
                                   'controls_enabled':False}
                     else:
                         # Run synchronously inside this worker. There is no queue
                         # of screenshots accumulating while slow OCR is running.
-                        analyzer = HudWorker(image,use_ocr=True,engine=engine,full_screen_ocr=False)
+                        if previous_size != image.size or previous_at is None or began-previous_at > 5:
+                            previous_reading = None
+                        analyzer = HudWorker(image,use_ocr=True,engine=engine,full_screen_ocr=False,
+                                             previous_reading=previous_reading)
                         results,errors = [],[]
                         analyzer.completed.connect(results.append)
                         analyzer.failed.connect(errors.append)
@@ -97,6 +131,8 @@ class RecordingWorker(QThread):
                         else:
                             payload = results[0]
                             report = payload['report']
+                            previous_reading = payload['reading'] if payload['reading'].tape_rails else None
+                            previous_size,previous_at = image.size,began
                             report.update(captured_utc=stamp,source='Roblox client recording',desktop_bounds=bounds)
                             index = summary['frames']
                             report['crops'] = {}
@@ -107,6 +143,8 @@ class RecordingWorker(QThread):
                                 report['crops'][name] = {'file':filename,'box':box}
                                 if name == 'adi': report['adi_colour'] = adi_colour_sample(crop)
                             summary['frames'] += 1
+                            if report['geometry'].get('layout_source') == 'current_frame_validated_previous_positions':
+                                summary['validated_layout_reuses'] += 1
                             status = report['altitude_check']['status']
                             if status == 'agree': summary['altitude_agreements'] += 1
                             if status == 'disagree': summary['altitude_disagreements'] += 1
@@ -114,7 +152,10 @@ class RecordingWorker(QThread):
                             if report['instruments']['airspeed']['value'] is None: summary['airspeed_unavailable'] += 1
                             report['processing_seconds'] = time.monotonic()-began
                             report['reading_age_seconds'] = report['processing_seconds']
+                            report['continuity'] = history.assess(report['instruments'],began,report['processing_seconds'])
                             report['freshness'] = 'delayed' if report['reading_age_seconds'] > 5 else 'recent'
+                            summary['suspicious_jumps'] += sum(flag['status']=='suspicious_jump' for flag in report['continuity'].values())
+                            summary['delayed_samples'] += int(report['freshness']=='delayed')
                             record = {'status':'sample','report':report}
                         image.close()
                     log.write(json.dumps(record)+'\n')
@@ -132,6 +173,7 @@ class RecordingWorker(QThread):
             with zipfile.ZipFile(archive_path,'w',compression=zipfile.ZIP_DEFLATED) as archive:
                 for path in sorted(self.folder.iterdir()):
                     archive.write(path,path.name)
-            self.saved.emit({'path':str(archive_path),'summary':summary})
+            logs_path,parts = shareable_archives(self.folder)
+            self.saved.emit({'path':str(archive_path),'summary':summary,'logs_path':logs_path,'image_parts':parts})
         except Exception as exc:
             self.failed.emit(f'{exc}. Saved source files, if any: {self.folder}')

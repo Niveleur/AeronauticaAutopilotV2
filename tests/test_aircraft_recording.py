@@ -5,11 +5,32 @@ import unittest
 from unittest.mock import Mock,patch
 import zipfile
 from PIL import Image
-from AeroHelper.ui.aircraft_recording import RecordingWorker,adi_colour_sample,instrument_crops
+from AeroHelper.ui.aircraft_recording import RecordingWorker,adi_colour_sample,instrument_crops,shareable_archives
 from AeroHelper.automation.aircraft_hud import analyze_cockpit
 
 
 class RecordingTests(unittest.TestCase):
+    def test_shareable_image_zips_are_independent_and_include_every_crop(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            folder=Path(tmp)/'session';folder.mkdir()
+            (folder/'session.json').write_text('{}')
+            (folder/'samples.jsonl').write_text('{}\n')
+            for index in range(5):
+                Image.effect_noise((160,160),100).save(folder/f'{index:05d}-adi.png')
+            logs,parts=shareable_archives(folder,limit=40000)
+            self.assertGreater(len(parts),1)
+            names=[]
+            for path in parts:
+                self.assertLess(Path(path).stat().st_size,50000)
+                with zipfile.ZipFile(path) as archive:
+                    self.assertIn('session.json',archive.namelist())
+                    self.assertIn('samples.jsonl',archive.namelist())
+                    names.extend(name for name in archive.namelist() if name.endswith('.png'))
+            self.assertEqual(len(names),5)
+            self.assertEqual(len(set(names)),5)
+            with zipfile.ZipFile(logs) as archive:
+                self.assertEqual(set(archive.namelist()),{'session.json','samples.jsonl'})
+
     def test_tint_evidence_is_not_reported_as_attitude(self):
         for colour,key in [((60,130,180),'blue_fraction'),((140,100,70),'brown_fraction')]:
             result=adi_colour_sample(Image.new('RGB',(20,20),colour))

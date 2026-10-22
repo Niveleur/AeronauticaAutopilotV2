@@ -17,6 +17,7 @@ class CockpitReading:
     speed_box: tuple | None
     reason: str = ''
     tape_rails: tuple | None = None
+    layout_source: str = 'unavailable'
 
 
 def _tape_layout(white):
@@ -79,7 +80,29 @@ def _thin_white_lines(channels, white, axis):
     return ridge
 
 
-def analyze_cockpit(image):
+def _validated_previous_layout(vertical, horizontal, previous):
+    """Reuse positions only with current-frame paired rails AND end-cap evidence."""
+    if previous is None or not previous.tape_rails:
+        return None
+    h,w = vertical.shape
+    left,right,top,bottom = previous.tape_rails
+    span = bottom-top
+    if not (0 <= top < bottom < h and 0 < left < right < w):
+        return None
+    radius = max(3,round(h*.012))
+    for x,direction in ((left,-1),(right,1)):
+        support = vertical[top:bottom+1,max(0,x-2):min(w,x+3)].any(axis=1).mean()
+        if support < .45:
+            return None
+        a,b = sorted((x,x+direction*round(span*.14)))
+        for y in (top,bottom):
+            cap = horizontal[max(0,y-radius):min(h,y+radius+1),max(0,a):min(w,b)]
+            if cap.size == 0 or cap.any(axis=0).mean() < .65:
+                return None
+    return previous.tape_rails,previous.altitude_box,previous.speed_box
+
+
+def analyze_cockpit(image, previous_reading=None):
     """Find a bilateral near-white line, including tilted candidates.
 
     Confidence means pixel support, not probability of a correct horizon.
@@ -94,8 +117,15 @@ def analyze_cockpit(image):
         return CockpitReading(None, None, 0., None, None, 'Image too small; use an original-resolution cockpit capture.')
     channels = rgb.astype(np.float32)
     native_white = (channels.min(axis=2) >= 185) & (np.ptp(channels, axis=2) < 48)
-    layout = _tape_layout(_thin_white_lines(channels, native_white, axis=1))
-    native_white = _thin_white_lines(channels, native_white, axis=0)
+    vertical = _thin_white_lines(channels, native_white, axis=1)
+    layout = _tape_layout(vertical)
+    layout_source = 'detected' if layout else 'unavailable'
+    horizontal = _thin_white_lines(channels, native_white, axis=0)
+    if not layout:
+        layout = _validated_previous_layout(vertical,horizontal,previous_reading)
+        if layout:
+            layout_source = 'current_frame_validated_previous_positions'
+    native_white = horizontal
     rails,altitude,speed = layout if layout else (None,None,None)
     # Bound line-search cost; pool the native mask to retain thin HUD lines.
     scale = min(1., 1000 / w)
@@ -133,16 +163,16 @@ def analyze_cockpit(image):
             candidates.append((float(scores[idx]), float(ys[idx]), float(slope)))
     if not candidates:
         return CockpitReading(None, None, 0., altitude, speed,
-                              'No supported thin HUD horizon. Bright scenery or obscured lines may prevent detection.', rails)
+                              'No supported thin HUD horizon. Bright scenery or obscured lines may prevent detection.', rails, layout_source)
     candidates.sort(reverse=True)
     score,y,slope = candidates[0]
     ambiguous = any(other >= score-.08 and abs(oy-y) > sh*.035
                     for other,oy,_ in candidates[1:])
     if ambiguous:
         return CockpitReading(None, None, score, altitude, speed,
-                              'Multiple supported lines; horizon is ambiguous (possible pitch ladder).', rails)
+                              'Multiple supported lines; horizon is ambiguous (possible pitch ladder).', rails, layout_source)
     return CockpitReading(y/scale, slope, score, altitude, speed,
-                          'Unverified line candidate. Pitch and roll require cockpit calibration.', rails)
+                          'Unverified line candidate. Pitch and roll require cockpit calibration.', rails, layout_source)
 
 
 @dataclass(frozen=True)
