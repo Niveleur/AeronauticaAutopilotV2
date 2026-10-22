@@ -116,7 +116,7 @@ class DialogTests(unittest.TestCase):
                 report=json.loads(archive.read('report.json'))
                 self.assertEqual(report['size'],[640,480])
                 self.assertIn('Source:',archive.read('diagnostics.txt').decode())
-                with Image.open(archive.open('hud-test-window.png')) as screenshot:
+                with archive.open('hud-test-window.png') as stream, Image.open(stream) as screenshot:
                     self.assertEqual(screenshot.format,'PNG')
                     self.assertGreater(screenshot.width,640)
                 self.assertIsNone(report['instruments']['altitude']['value'])
