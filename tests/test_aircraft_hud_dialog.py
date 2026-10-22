@@ -150,6 +150,31 @@ class DialogTests(unittest.TestCase):
         self.assertFalse(self.dialog.save_button.isEnabled())
         self.assertIn('not foreground',self.dialog.status.text())
 
+    def test_recording_minimizes_and_can_stop_during_countdown(self):
+        with tempfile.TemporaryDirectory() as tmp, \
+             patch('AeroHelper.ui.aircraft_hud_dialog.QFileDialog.getExistingDirectory',return_value=tmp), \
+             patch('AeroHelper.ui.aircraft_hud_dialog.QTimer.singleShot'), \
+             patch('AeroHelper.ui.aircraft_hud_dialog.bring_roblox_to_front'):
+            self.dialog.begin_recording()
+            recorder=self.dialog.recorder
+            self.assertIsNotNone(recorder)
+            self.assertTrue(self.dialog._busy)
+            self.assertTrue(self.dialog.record_button.isEnabled())
+            self.assertFalse(self.dialog.capture_button.isEnabled())
+            self.dialog.reject()
+            self.assertTrue(self.dialog._busy)
+            self.dialog.begin_recording()
+            self.assertTrue(recorder._stop.is_set())
+            self.assertFalse(self.dialog.record_button.isEnabled())
+            with patch.object(self.dialog,'_restore_windows') as restore:
+                self.dialog._record_progress({'summary':{'frames':0,'capture_failures':1},
+                                              'latest':{'status':'capture_skipped','reason':'not foreground'}})
+                restore.assert_not_called()
+            self.dialog._record_finished()
+            self.assertIsNone(self.dialog.recorder)
+            self.assertFalse(self.dialog._busy)
+            self.assertTrue(self.dialog.capture_button.isEnabled())
+
     def test_missing_airspeed_retries_contrast_without_overwriting_conflicts(self):
         fixture=Path(__file__).parent/'fixtures'/'aircraft-tapes-clouds-30583ft-156kt.png'
         for original,expected,retry in [('',156,True),('156 158',None,False),('156',156,False)]:

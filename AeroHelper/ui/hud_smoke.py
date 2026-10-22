@@ -64,6 +64,13 @@ def run_hud_smoke(app, report_path):
             dialog = host._aircraft_hud_dialog
             assert dialog.isVisible(), 'HUD menu did not open its window'
             report['menu_opened'] = True
+            from AeroHelper.ui.aircraft_recording import RecordingWorker, adi_colour_sample
+            assert dialog.record_button.isEnabled(), 'Recording button unavailable'
+            recorder = RecordingWorker(Path(report_path).parent / 'unused-smoke-recording')
+            recorder.request_stop()
+            assert recorder._stop.is_set(), 'Recorder stop flag unavailable'
+            assert adi_colour_sample(Image.new('RGB',(20,20),'white'))['pitch_degrees'] is None
+            report['recorder_available'] = True
             dialog.resize(900, 700)
             dialog._start_worker(Image.new('RGB', (640, 480), 'navy'))
             QTimer.singleShot(50, check_rendered_result)

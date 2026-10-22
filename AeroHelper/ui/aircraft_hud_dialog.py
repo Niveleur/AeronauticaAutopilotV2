@@ -26,14 +26,17 @@ class HudWorker(QThread):
     completed = pyqtSignal(object)
     failed = pyqtSignal(str)
 
-    def __init__(self, image=None, use_ocr=False, parent=None):
+    def __init__(self, image=None, use_ocr=False, parent=None, engine=None, full_screen_ocr=True):
         super().__init__(parent)
         self.image = image
         self.use_ocr = use_ocr
+        self.engine = engine
+        self.full_screen_ocr = full_screen_ocr
 
     def run(self):
         try:
             image, bounds = (self.image.copy(), None) if self.image is not None else capture_roblox_client()
+            captured_utc = datetime.now(timezone.utc).isoformat()
             self.captured.emit(image)
             reading = analyze_cockpit(image)
             text, ocr_status = '', 'OCR not requested'
@@ -44,10 +47,11 @@ class HudWorker(QThread):
                 try:
                     # Existing platform-aware OCR pipeline, on a worker thread.
                     from AeroHelper.ocr.normal_ocr import NormalOCR
-                    engine = NormalOCR()
+                    engine = self.engine if self.engine is not None else NormalOCR()
                     with tempfile.TemporaryDirectory(prefix='aerohelper_hud_') as tmp:
                         filename = str(Path(tmp) / 'cockpit.png')
-                        image.save(filename)
+                        if self.full_screen_ocr:
+                            image.save(filename)
                         panel_reading = InstrumentCandidate(None,None,'Left-panel region unavailable')
                         # Retry source recognition, never retry to force numerical
                         # agreement with the cockpit. A valid broad result wins.
@@ -76,7 +80,7 @@ class HudWorker(QThread):
                                 attempt['error'] = str(exc)
                                 panel_ocr['error'] = str(exc)
                                 panel_reading = InstrumentCandidate(None,None,'Left-panel OCR failed')
-                        text = engine.extract_text(filename)
+                        text = engine.extract_text(filename) if self.full_screen_ocr else panel_ocr['text']
                         label_boxes = tape_label_boxes(reading)
                         for name,box in tape_digit_boxes(reading).items():
                             labels = image.crop(label_boxes[name])
@@ -118,6 +122,10 @@ class HudWorker(QThread):
                                                 'label_box': label_boxes[name], 'digit_box': box,
                                                 'label_attempts': label_attempts}
                             tape_readings[name] = parse_tape_readout(name,label_text,digit_text,full_text=text)
+                            if not self.full_screen_ocr:
+                                candidate = tape_readings[name]
+                                tape_readings[name] = InstrumentCandidate(candidate.value,candidate.unit,
+                                    candidate.reason.replace('full-screen instrument label','left-panel instrument label'))
                     has_text = panel_ocr['text'].strip() or text.strip() or any(region['digit_text'].strip() for region in region_ocr.values())
                     ocr_status = 'OCR completed' if has_text else 'No OCR text returned; engine or model may be unavailable'
                 except Exception as exc:
@@ -132,7 +140,7 @@ class HudWorker(QThread):
             instruments['altitude'] = altitude_check.selected
             self.completed.emit({
                 'image': image, 'reading': reading,
-                'report': {'captured_utc': datetime.now(timezone.utc).isoformat(),
+                'report': {'captured_utc': captured_utc,
                            'source': 'imported screenshot' if self.image is not None else 'Roblox client',
                            'size': list(image.size), 'desktop_bounds': bounds,
                            'geometry': asdict(reading), 'ocr_status': ocr_status, 'raw_ocr': text,
@@ -175,6 +183,8 @@ class AircraftHudDialog(QDialog):
         self._hidden_windows = []
         self._busy = False
         self._payload = None
+        self.recorder = None
+        self._record_windows = []
         self.setWindowTitle('Aircraft HUD Test — read-only')
         self.resize(960,760)
         layout = QVBoxLayout(self)
@@ -192,6 +202,10 @@ class AircraftHudDialog(QDialog):
         self.save_button.setEnabled(False)
         for button in (self.capture_button,self.open_button,self.screenshot_button,self.save_button): buttons.addWidget(button)
         layout.addLayout(buttons)
+        self.record_button = QPushButton('Start read-only recording…')
+        self.record_button.setToolTip('Record instrument crops and OCR for up to 10 minutes / 200 MB. Restore this window to stop and save.')
+        layout.addWidget(self.record_button)
+        self.record_button.clicked.connect(self.begin_recording)
         self.ocr_box = QCheckBox('Read OCR too (experimental; first use may download models)')
         layout.addWidget(self.ocr_box)
         self.status = QLabel('Waiting for capture. Pitch / roll: uncalibrated. Altitude / airspeed: unavailable.')
@@ -231,11 +245,92 @@ class AircraftHudDialog(QDialog):
 
     def set_busy(self, busy):
         self._busy = busy
+        self.record_button.setEnabled(not busy or self.recorder is not None)
         self.capture_button.setEnabled(not busy)
         self.open_button.setEnabled(not busy)
         self.ocr_box.setEnabled(not busy)
         self.screenshot_button.setEnabled(not busy)
         self.save_button.setEnabled(not busy and self._payload is not None)
+
+    def begin_recording(self):
+        if self.recorder is not None:
+            self.record_button.setEnabled(False)
+            self.record_button.setText('Stopping after current OCR…')
+            self.recorder.request_stop()
+            return
+        if self._busy:
+            return
+        folder = QFileDialog.getExistingDirectory(self,'Choose where to save the recording')
+        if not folder:
+            return
+        from AeroHelper.ui.aircraft_recording import RecordingWorker
+        name = datetime.now().strftime('aircraft-session-%Y%m%d-%H%M%S-%f')
+        self._payload = None
+        self._preview_image = None
+        self.preview.setText('Recording instrument crops in the background. Restore this window to stop and save.')
+        self.recorder = RecordingWorker(Path(folder)/name,self)
+        self.recorder.progress.connect(self._record_progress)
+        self.recorder.saved.connect(self._record_saved)
+        self.recorder.failed.connect(self._record_failed)
+        self.recorder.finished.connect(self._record_finished)
+        self.set_busy(True)
+        self.record_button.setText('Stop recording and save ZIP')
+        self.status.setText('Recording starts in 3 seconds. Fly normally; restore this window to stop. No flight inputs sent.')
+        self.details.setPlainText(f'Build: {build_revision()}\nRecording folder: {self.recorder.folder}\n'
+                                  'Instrument crops only. ADI location/tints are experimental, not attitude readings.\n'
+                                  'OCR speed sets the actual sample interval; readings may be delayed.\n'
+                                  'Automatically stops after 10 minutes or about 200 MB.')
+        self._record_windows = [w for w in QApplication.topLevelWidgets() if w.isVisible()]
+        for widget in self._record_windows:
+            widget.showMinimized()
+        try:
+            bring_roblox_to_front()
+        except Exception:
+            pass
+        QTimer.singleShot(3000,self._launch_recording)
+
+    def _launch_recording(self):
+        if self.recorder is not None:
+            self.recorder.start()
+
+    def _record_progress(self, event):
+        summary,latest = event['summary'],event['latest']
+        text = f"Recording: {summary['frames']} frames; skipped captures: {summary['capture_failures']}. "
+        if latest['status'] == 'sample':
+            report = latest['report']
+            text += ' | '.join(f"{name}: {value['value']} {value['unit']}" if value['value'] is not None
+                               else f"{name}: unavailable" for name,value in report['instruments'].items())
+            text += f". Processing delay: {report['reading_age_seconds']:.1f}s ({report['freshness']}). Altitude: {report['altitude_check']['status']}."
+        else:
+            text += latest.get('reason','Analysis unavailable')
+        self.status.setText(text+' Restore this window and press Stop to save. No controls enabled.')
+
+    def _record_saved(self, result):
+        summary = result['summary']
+        self.status.setText(f"Recording saved: {summary['frames']} frames; "
+                            f"{summary['capture_failures']} skipped captures. {summary['stop_reason']}.")
+        self.details.append(f"\nSaved ZIP: {result['path']}\n"
+                            f"Altitude agreements: {summary['altitude_agreements']}; "
+                            f"disagreements: {summary['altitude_disagreements']}; "
+                            f"altitude unavailable: {summary['altitude_unavailable']}; "
+                            f"airspeed unavailable: {summary['airspeed_unavailable']}.\n"
+                            'ADI tints and crops need review; no pitch or roll calibration.')
+
+    def _record_failed(self, message):
+        self.status.setText('Recording failed; see details.')
+        self.details.append('\n'+message)
+
+    def _record_finished(self):
+        self.recorder.deleteLater()
+        self.recorder = None
+        self.record_button.setText('Start read-only recording…')
+        self.set_busy(False)
+        for widget in self._record_windows:
+            widget.showNormal()
+        self._record_windows = []
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
 
     def begin_capture(self):
         if self._busy:
@@ -433,7 +528,7 @@ class AircraftHudDialog(QDialog):
     def reject(self):
         # A running QThread must finish before the dialog can be destroyed.
         if self._busy:
-            self.status.setText('Capture / OCR is still running. Wait for the result before closing.')
+            self.status.setText('Still working. Stop the recording and wait for saving, or wait for capture / OCR to finish.')
             return
         super().reject()
 

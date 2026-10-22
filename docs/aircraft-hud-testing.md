@@ -128,3 +128,37 @@ label, an explicit feet unit and a unique value. All attempt texts/bounds and
 the selected crop are recorded. A valid broad reading is never retried merely
 because it disagrees with the cockpit; the 5 ft rejection policy is unchanged.
 The cropped 29,921 ft card fixture contains no chat or player identifiers.
+
+## Read-only flight recording trial
+
+Open **Aircraft HUD Test → Start read-only recording**, choose a destination
+folder, and switch to Roblox during the 3-second countdown. AeroHelper minimizes;
+no flight inputs are sent. Fly normally. Restore the HUD Test from the taskbar
+and press **Stop recording and save ZIP**. Stopping waits for the current OCR
+operation; closing is blocked until saving finishes. Sessions stop automatically
+after 10 minutes of collection or approximately 200 MB of cropped PNGs. First
+OCR initialization can take additional time if models need downloading.
+
+The session folder contains a flushed `samples.jsonl`, instrument PNGs and a
+`session.json` summary. A sibling ZIP is produced on completion; upload that ZIP
+for review. The source folder remains available if packaging fails. Foreground
+losses are logged without saving a screenshot. Only instrument regions are
+persisted, not full-screen or desktop images. Check crops before sharing: the
+ADI and left-panel positions assume the standard layout and are not confirmed
+for every aircraft or UI scale.
+
+OCR is sequential with a target minimum interval of 2 seconds, not guaranteed
+2-second updates. A single OCR engine is reused. Every sample includes capture
+time, processing delay, missing readings, and the existing 5-ft altitude
+comparison. No old reading is substituted for a missing reading. Processing over
+5 seconds is flagged as delayed. Raw changes are retained for review rather than
+rejected with an arbitrary climb/dive-rate limit. Full-screen OCR is skipped;
+local panel text may corroborate a tape label but is never a third altitude
+source. Recording and analysis occur in one worker, so OCR can reduce the crop
+sampling rate; this first trial measures that limitation as well.
+
+ADI blue/brown pixel fractions are **experimental colour evidence only**. They
+do not claim a detected boundary, valid pitch, valid roll or aircraft control.
+Review the collected ADI crops against cloud, ocean, terrain and snow before
+calibrating any attitude estimator. The main HUD horizon also remains unverified
+in snowy areas and may be off-screen during steep dives.
