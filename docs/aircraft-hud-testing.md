@@ -33,7 +33,12 @@ Upstream AeroHelper's MIT license and attribution remain in place.
    Feet/knots are **assumed from that experimental profile**, not recognised units.
    Missing labels, mixed text or disagreements between sources remain unavailable.
    Full-screen tape ticks and chat numbers never substitute for a readout.
-6. Use **Save diagnostic ZIP** to save the original image, annotated image and
+6. Use **Save screenshot** to save a PNG of the HUD Test window's contents,
+   including the preview, readings, and currently visible diagnostic text. It
+   also works before capture or after a failed capture. It does not capture the
+   desktop or native Windows title bar. The build ID appears in the text pane.
+   **Save diagnostic ZIP** includes this window image as `hud-test-window.png`
+   and the complete diagnostic text as `diagnostics.txt`, alongside the original image, annotated image and
    JSON report, plus isolated numeric readout crops when available. Review visible
    game/player information before sharing. No files
    are uploaded automatically. **Open screenshot** also supports offline review.

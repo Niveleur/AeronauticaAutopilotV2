@@ -112,10 +112,29 @@ class DialogTests(unittest.TestCase):
             with patch('AeroHelper.ui.aircraft_hud_dialog.QFileDialog.getSaveFileName',return_value=(filename,'ZIP')):
                 self.dialog.save_report()
             with zipfile.ZipFile(filename) as archive:
-                self.assertEqual(set(archive.namelist()),{'report.json','cockpit.png','annotated.png'})
+                self.assertEqual(set(archive.namelist()),{'report.json','cockpit.png','annotated.png','hud-test-window.png','diagnostics.txt'})
                 report=json.loads(archive.read('report.json'))
                 self.assertEqual(report['size'],[640,480])
+                self.assertIn('Source:',archive.read('diagnostics.txt').decode())
+                with Image.open(archive.open('hud-test-window.png')) as screenshot:
+                    self.assertEqual(screenshot.format,'PNG')
+                    self.assertGreater(screenshot.width,640)
                 self.assertIsNone(report['instruments']['altitude']['value'])
+
+    def test_save_window_screenshot_works_without_a_successful_capture(self):
+        self.dialog.status.setText('Capture failed: test diagnostic message')
+        self.dialog.details.setPlainText('Build: test-build\nDiagnostic text visible without highlighting')
+        self.assertIsNone(self.dialog._payload)
+        self.assertTrue(self.dialog.screenshot_button.isEnabled())
+        with tempfile.TemporaryDirectory() as tmp:
+            filename=str(Path(tmp)/'hud-window')
+            with patch('AeroHelper.ui.aircraft_hud_dialog.QFileDialog.getSaveFileName',return_value=(filename,'PNG')):
+                QTest.mouseClick(self.dialog.screenshot_button,Qt.LeftButton)
+            with Image.open(filename+'.png') as screenshot:
+                self.assertEqual(screenshot.format,'PNG')
+                ratio=self.dialog.devicePixelRatioF()
+                self.assertEqual(screenshot.size,(round(self.dialog.width()*ratio),round(self.dialog.height()*ratio)))
+        self.assertIn('screenshot saved',self.dialog.details.toPlainText())
 
     def test_failed_capture_restores_ui_and_removes_stale_results(self):
         self.dialog._payload={'stale':True}
@@ -156,6 +175,9 @@ class DialogTests(unittest.TestCase):
         self.assertIsNone(report['roll_degrees'])
         self.assertFalse(report['controls_enabled'])
         self.dialog.show_result(results[0])
+        self.app.processEvents()
+        self.assertLessEqual(self.dialog.preview.pixmap().width(),self.dialog.preview.contentsRect().width())
+        self.assertLessEqual(self.dialog.preview.pixmap().height(),self.dialog.preview.contentsRect().height())
         with tempfile.TemporaryDirectory() as tmp:
             filename=str(Path(tmp)/'regions.zip')
             with patch('AeroHelper.ui.aircraft_hud_dialog.QFileDialog.getSaveFileName',return_value=(filename,'ZIP')):

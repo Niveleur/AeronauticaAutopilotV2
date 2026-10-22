@@ -7,10 +7,10 @@ from pathlib import Path
 import tempfile
 import zipfile
 from PIL import Image, ImageDraw
-from PyQt5.QtCore import Qt, QThread, QTimer, pyqtSignal
+from PyQt5.QtCore import Qt, QThread, QTimer, pyqtSignal, QByteArray, QBuffer, QIODevice, QEvent
 from PyQt5.QtGui import QImage, QPixmap
 from PyQt5.QtWidgets import (QApplication, QCheckBox, QDialog, QFileDialog,
-                            QHBoxLayout, QLabel, QPushButton, QTextEdit, QVBoxLayout)
+                            QHBoxLayout, QLabel, QPushButton, QTextEdit, QVBoxLayout, QSizePolicy)
 from AeroHelper.automation.aircraft_hud import (analyze_cockpit, parse_instruments,
                                                 tape_digit_boxes, tape_label_boxes, tape_label_recognized, parse_tape_readout,
                                                 reconcile_instruments, InstrumentCandidate,
@@ -18,6 +18,7 @@ from AeroHelper.automation.aircraft_hud import (analyze_cockpit, parse_instrumen
                                                 assess_altitude)
 from AeroHelper.utils.aircraft_capture import capture_roblox_client
 from AeroHelper.utils.window import bring_roblox_to_front
+from AeroHelper.utils.build_info import build_revision
 
 
 class HudWorker(QThread):
@@ -170,9 +171,11 @@ class AircraftHudDialog(QDialog):
         buttons = QHBoxLayout()
         self.capture_button = QPushButton('Capture Roblox HUD (3s)')
         self.open_button = QPushButton('Open screenshot…')
+        self.screenshot_button = QPushButton('Save screenshot…')
+        self.screenshot_button.setToolTip('Save a PNG of this window, including the current preview, readings and visible diagnostic text.')
         self.save_button = QPushButton('Save diagnostic ZIP…')
         self.save_button.setEnabled(False)
-        for button in (self.capture_button,self.open_button,self.save_button): buttons.addWidget(button)
+        for button in (self.capture_button,self.open_button,self.screenshot_button,self.save_button): buttons.addWidget(button)
         layout.addLayout(buttons)
         self.ocr_box = QCheckBox('Read OCR too (experimental; first use may download models)')
         layout.addWidget(self.ocr_box)
@@ -182,9 +185,12 @@ class AircraftHudDialog(QDialog):
         self.preview = QLabel('Captured image and candidate overlays will appear here.')
         self.preview.setAlignment(Qt.AlignCenter)
         self.preview.setMinimumSize(400,240)
+        self.preview.setSizePolicy(QSizePolicy.Ignored,QSizePolicy.Ignored)
+        self.preview.installEventFilter(self)
         layout.addWidget(self.preview,1)
         self.details = QTextEdit()
         self.details.setReadOnly(True)
+        self.details.setPlainText(f'Build: {build_revision()}\nWaiting for capture.')
         # Native Windows text colours can remain black when the parent gives
         # this editor a dark background. Specify both sides of the contrast.
         self.details.setStyleSheet("""
@@ -202,6 +208,7 @@ class AircraftHudDialog(QDialog):
         layout.addWidget(self.details)
         self.capture_button.clicked.connect(self.begin_capture)
         self.open_button.clicked.connect(self.open_image)
+        self.screenshot_button.clicked.connect(self.save_screenshot)
         self.save_button.clicked.connect(self.save_report)
         self._capture_timer = QTimer(self)
         self._capture_timer.setSingleShot(True)
@@ -212,6 +219,7 @@ class AircraftHudDialog(QDialog):
         self.capture_button.setEnabled(not busy)
         self.open_button.setEnabled(not busy)
         self.ocr_box.setEnabled(not busy)
+        self.screenshot_button.setEnabled(not busy)
         self.save_button.setEnabled(not busy and self._payload is not None)
 
     def begin_capture(self):
@@ -271,7 +279,7 @@ class AircraftHudDialog(QDialog):
         self._payload = None
         self._preview_image = None
         self.preview.clear()
-        self.details.clear()
+        self.details.setPlainText(f'Build: {build_revision()}\nCapture / analysis error: {message}')
         self.save_button.setEnabled(False)
         self.status.setText(f'Capture / analysis failed: {message}')
 
@@ -309,7 +317,7 @@ class AircraftHudDialog(QDialog):
                              f"tolerance {altitude['tolerance_ft']:g} ft; {state}.")
         self.status.setText(geometry + f'Pixel support: {reading.horizon_confidence:.0%} (not accuracy). '
                             + reading.reason + '\n' + ' | '.join(values) + altitude_line + '\nPitch / roll: uncalibrated; no controls enabled.')
-        lines = [f"Source: {report['source']} | Resolution: {report['size']} | {report['captured_utc']}",
+        lines = [f'Build: {build_revision()}', f"Source: {report['source']} | Resolution: {report['size']} | {report['captured_utc']}",
                  'Cyan: candidate line. Orange: tape-derived readout regions. Tape-profile units assumed: feet / knots.',
                  report['ocr_status']]
         for name,candidate in report.get('tape_instruments',{}).items():
@@ -332,11 +340,48 @@ class AircraftHudDialog(QDialog):
         image = self._preview_image
         data = image.tobytes('raw','RGB')
         qimage = QImage(data,image.width,image.height,image.width*3,QImage.Format_RGB888).copy()
-        self.preview.setPixmap(QPixmap.fromImage(qimage).scaled(self.preview.size(),Qt.KeepAspectRatio,Qt.SmoothTransformation))
+        self.preview.setPixmap(QPixmap.fromImage(qimage).scaled(self.preview.contentsRect().size(),Qt.KeepAspectRatio,Qt.SmoothTransformation))
+
+    def eventFilter(self, watched, event):
+        if watched is getattr(self,'preview',None) and event.type() == QEvent.Resize:
+            self._render_preview()
+        return super().eventFilter(watched,event)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._render_preview()
+
+    def _window_screenshot_png(self):
+        # Render this widget, not the desktop: no file chooser, overlapping
+        # window or unrelated monitor can obscure the captured diagnostics.
+        pixmap = self.grab()
+        if pixmap.isNull():
+            raise IOError('The HUD Test window could not be rendered')
+        data = QByteArray()
+        buffer = QBuffer(data)
+        if not buffer.open(QIODevice.WriteOnly):
+            raise IOError('Could not create screenshot buffer')
+        try:
+            if not pixmap.save(buffer,'PNG'):
+                raise IOError('Could not encode the HUD Test screenshot')
+        finally:
+            buffer.close()
+        return bytes(data)
+
+    def save_screenshot(self):
+        if self._busy:
+            return
+        filename,_ = QFileDialog.getSaveFileName(self,'Save HUD Test window screenshot',
+                                                'aircraft-hud-test.png','PNG (*.png)')
+        if not filename:
+            return
+        if not filename.lower().endswith('.png'):
+            filename += '.png'
+        try:
+            Path(filename).write_bytes(self._window_screenshot_png())
+            self.details.append('\nHUD Test window screenshot saved.')
+        except Exception as exc:
+            self.details.append(f'\nCould not save window screenshot: {exc}')
 
     def save_report(self):
         if self._payload is None:
@@ -348,6 +393,8 @@ class AircraftHudDialog(QDialog):
         try:
             with zipfile.ZipFile(filename,'w',compression=zipfile.ZIP_DEFLATED) as archive:
                 archive.writestr('report.json',json.dumps(self._payload['report'],indent=2))
+                archive.writestr('hud-test-window.png',self._window_screenshot_png())
+                archive.writestr('diagnostics.txt',self.details.toPlainText())
                 for name,image in [('cockpit.png',self._payload['image']),('annotated.png',self._preview_image)]:
                     buffer = io.BytesIO()
                     image.save(buffer,format='PNG')
