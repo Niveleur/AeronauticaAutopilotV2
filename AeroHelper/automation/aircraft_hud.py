@@ -57,6 +57,28 @@ def _tape_layout(white):
     return (left,right,top,bottom), box(right+.13*span,right+.30*span), box(left-.30*span,left-.13*span)
 
 
+def _thin_white_lines(channels, white, axis):
+    """Require a bright ridge with darker surroundings on BOTH sides.
+
+    A snow field or sky/terrain edge is white on at least one side and must
+    not support a HUD line. Sampling stays at native resolution so resizing
+    cannot turn a broad white patch into a thin stroke.
+    """
+    distance = max(4, round(channels.shape[0] * .006))
+    brightness = channels.min(axis=2)
+    ridge = np.zeros_like(white)
+    center = [slice(None), slice(None)]
+    before = center.copy()
+    after = center.copy()
+    center[axis] = slice(distance, -distance)
+    before[axis] = slice(None, -2*distance)
+    after[axis] = slice(2*distance, None)
+    c, a, b = tuple(center), tuple(before), tuple(after)
+    ridge[c] = (white[c] & (brightness[c] - brightness[a] >= 18)
+                & (brightness[c] - brightness[b] >= 18))
+    return ridge
+
+
 def analyze_cockpit(image):
     """Find a bilateral near-white line, including tilted candidates.
 
@@ -72,7 +94,8 @@ def analyze_cockpit(image):
         return CockpitReading(None, None, 0., None, None, 'Image too small; use an original-resolution cockpit capture.')
     channels = rgb.astype(np.float32)
     native_white = (channels.min(axis=2) >= 185) & (np.ptp(channels, axis=2) < 48)
-    layout = _tape_layout(native_white)
+    layout = _tape_layout(_thin_white_lines(channels, native_white, axis=1))
+    native_white = _thin_white_lines(channels, native_white, axis=0)
     rails,altitude,speed = layout if layout else (None,None,None)
     # Bound line-search cost; pool the native mask to retain thin HUD lines.
     scale = min(1., 1000 / w)
@@ -110,7 +133,7 @@ def analyze_cockpit(image):
             candidates.append((float(scores[idx]), float(ys[idx]), float(slope)))
     if not candidates:
         return CockpitReading(None, None, 0., altitude, speed,
-                              'No supported bilateral horizon. Check cockpit view, HUD colour and scale.', rails)
+                              'No supported thin HUD horizon. Bright scenery or obscured lines may prevent detection.', rails)
     candidates.sort(reverse=True)
     score,y,slope = candidates[0]
     ambiguous = any(other >= score-.08 and abs(oy-y) > sh*.035

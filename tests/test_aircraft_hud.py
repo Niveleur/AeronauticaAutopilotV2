@@ -46,6 +46,25 @@ class GeometryTests(unittest.TestCase):
         draw.text((600,340),'IAS 150 KTS',fill='white')
         self.assertIsNone(analyze_cockpit(image).horizon_y)
 
+    def test_whiteout_and_broad_bright_edges_are_not_hud_lines(self):
+        for colour in ('white', (225,225,225)):
+            image = Image.new('RGB', (1000,600), colour)
+            self.assertIsNone(analyze_cockpit(image).horizon_y)
+        image = Image.new('RGB', (1000,600), (80,110,150))
+        ImageDraw.Draw(image).rectangle((0,330,999,599), fill='white')
+        self.assertIsNone(analyze_cockpit(image).horizon_y)
+
+    def test_thin_hud_line_survives_bright_scenery(self):
+        image = Image.new('RGB', (1000,600), (220,220,220))
+        draw = ImageDraw.Draw(image)
+        draw.rectangle((0,400,999,599), fill='white')
+        draw.line((80,318,890,318), fill='white', width=3)
+        reading = analyze_cockpit(image)
+        self.assertAlmostEqual(reading.horizon_y,318,delta=5)
+        # A fully washed out line has no measurable contrast: fail closed.
+        draw.rectangle((0,0,999,599), fill='white')
+        self.assertIsNone(analyze_cockpit(image).horizon_y)
+
     def test_invalid_or_small_images(self):
         with self.assertRaises(ValueError): analyze_cockpit(np.zeros((200,300)))
         self.assertIsNone(analyze_cockpit(Image.new('RGB',(100,100))).altitude_box)
@@ -87,6 +106,18 @@ class ActualCaptureTests(unittest.TestCase):
                     self.assertTrue(speed[0] < 210*scale < speed[2])
                     for box in tape_digit_boxes(reading).values():
                         self.assertTrue(box[1] < 457*scale < box[3])
+
+    def test_snow_capture_tracks_hud_instead_of_terrain(self):
+        fixture = self.fixture.with_name('aircraft-tapes-snow-2639ft-156kt.png')
+        with Image.open(fixture) as source:
+            for scale in (.5,1.,1.5):
+                with self.subTest(scale=scale):
+                    image = source.resize((round(source.width*scale),round(source.height*scale)))
+                    reading = analyze_cockpit(image)
+                    self.assertIsNotNone(reading.tape_rails)
+                    self.assertIsNotNone(reading.altitude_box)
+                    self.assertAlmostEqual(reading.horizon_y,601*scale,delta=6)
+                    self.assertAlmostEqual(reading.horizon_slope,0.,delta=.02)
 
     def test_ultrawide_capture_uses_hud_rails_not_screen_edge_fractions(self):
         with Image.open(self.fixture) as crop:
