@@ -116,3 +116,10 @@ The GUI shows both values, difference, tolerance and source status. The ZIP
 contains the source readings, comparison and left-panel crop/OCR. No values are
 carried over from previous frames. Agreement is a single-frame OCR cross-check,
 not calibrated accuracy or permission to enable flight controls.
+
+If the broad left-panel crop loses the small feet suffix, OCR retries a tighter
+standard-layout altitude-card crop at 3× scale. It still requires the ALTITUDE
+label, an explicit feet unit and a unique value. All attempt texts/bounds and
+the selected crop are recorded. A valid broad reading is never retried merely
+because it disagrees with the cockpit; the 5 ft rejection policy is unchanged.
+The cropped 29,921 ft card fixture contains no chat or player identifiers.

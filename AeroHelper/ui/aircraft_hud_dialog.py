@@ -14,7 +14,7 @@ from PyQt5.QtWidgets import (QApplication, QCheckBox, QDialog, QFileDialog,
 from AeroHelper.automation.aircraft_hud import (analyze_cockpit, parse_instruments,
                                                 tape_digit_boxes, tape_label_boxes, tape_label_recognized, parse_tape_readout,
                                                 reconcile_instruments, InstrumentCandidate,
-                                                side_panel_altitude_box, parse_side_panel_altitude,
+                                                side_panel_altitude_box, side_panel_altitude_card_box, parse_side_panel_altitude,
                                                 assess_altitude)
 from AeroHelper.utils.aircraft_capture import capture_roblox_client
 from AeroHelper.utils.window import bring_roblox_to_front
@@ -38,7 +38,7 @@ class HudWorker(QThread):
             text, ocr_status = '', 'OCR not requested'
             region_ocr, tape_readings = {}, {}
             panel_reading = InstrumentCandidate(None,None,'Left-panel OCR not requested')
-            panel_ocr = {'box': side_panel_altitude_box(image.size), 'text': '', 'error': None}
+            panel_ocr = {'box': side_panel_altitude_box(image.size), 'text': '', 'error': None, 'attempts': []}
             if self.use_ocr:
                 try:
                     # Existing platform-aware OCR pipeline, on a worker thread.
@@ -47,15 +47,32 @@ class HudWorker(QThread):
                     with tempfile.TemporaryDirectory(prefix='aerohelper_hud_') as tmp:
                         filename = str(Path(tmp) / 'cockpit.png')
                         image.save(filename)
-                        if panel_ocr['box'] is not None:
+                        panel_reading = InstrumentCandidate(None,None,'Left-panel region unavailable')
+                        # Retry source recognition, never retry to force numerical
+                        # agreement with the cockpit. A valid broad result wins.
+                        panel_boxes = (side_panel_altitude_box(image.size),side_panel_altitude_card_box(image.size))
+                        for index,panel_box in enumerate(panel_boxes):
+                            if panel_box is None:
+                                continue
+                            attempt = {'box': panel_box, 'text': '', 'error': None}
+                            panel_ocr['attempts'].append(attempt)
                             try:
-                                panel = image.crop(panel_ocr['box'])
-                                panel = panel.resize((panel.width*2,panel.height*2),Image.Resampling.LANCZOS)
-                                panel_path = str(Path(tmp) / 'side-panel-altitude.png')
+                                panel = image.crop(panel_box)
+                                scale = 2 if index == 0 else 3
+                                panel = panel.resize((panel.width*scale,panel.height*scale),Image.Resampling.LANCZOS)
+                                name = 'side-panel-altitude.png' if index == 0 else 'side-panel-altitude-card.png'
+                                panel_path = str(Path(tmp) / name)
                                 panel.save(panel_path)
-                                panel_ocr['text'] = engine.extract_region_text(panel_path)
-                                panel_reading = parse_side_panel_altitude(panel_ocr['text'])
+                                attempt['text'] = engine.extract_region_text(panel_path)
+                                candidate = parse_side_panel_altitude(attempt['text'])
+                                if index == 0:
+                                    panel_ocr['text'] = attempt['text']
+                                panel_reading = candidate
+                                if candidate.value is not None:
+                                    panel_ocr.update(box=panel_box,text=attempt['text'],error=None,selected_attempt=index)
+                                    break
                             except Exception as exc:
+                                attempt['error'] = str(exc)
                                 panel_ocr['error'] = str(exc)
                                 panel_reading = InstrumentCandidate(None,None,'Left-panel OCR failed')
                         text = engine.extract_text(filename)
@@ -304,6 +321,8 @@ class AircraftHudDialog(QDialog):
             panel = report['side_panel_ocr']
             lines.append(f"Left-panel OCR: {panel['text'] or '(none)'}")
             if panel.get('error'): lines.append(f"Left-panel error: {panel['error']}")
+            if len(panel.get('attempts',[])) > 1:
+                lines.append('Left-panel altitude card retry attempted; all crop bounds and OCR results are recorded in the ZIP.')
         lines.extend(['Raw full-screen OCR (inspect against screenshot):',report['raw_ocr'] or '(none)'])
         self.details.setPlainText('\n'.join(lines))
 

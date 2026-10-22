@@ -261,6 +261,15 @@ def side_panel_altitude_box(size):
     return (0,int(height*.25),int(min(width*.16,height*.28)),int(height*.95))
 
 
+def side_panel_altitude_card_box(size):
+    """Experimental standard-panel retry; explicit label/unit checks still apply."""
+    width,height = size
+    if width < 200 or height < 120:
+        return None
+    return (int(min(height*.02,width*.02)),int(height*.565),
+            int(min(height*.17,width*.14)),int(height*.615))
+
+
 def parse_side_panel_altitude(text):
     number = r'(-?\d+(?:,\d{3})*(?:\.\d+)?)'
     patterns = (rf'\bALTITUDE\s*[:=]?\s*{number}\s*(?:FT|FEET)\b(?!\s*/)',
